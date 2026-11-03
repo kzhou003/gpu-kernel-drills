@@ -114,6 +114,16 @@ MLA 把 K、V 压缩到一个低秩 latent 里，KV cache 小很多。decode 时
 3. **硬件代际决定可选项**：B200 上最好的 kernel 在 5090 上可能根本跑不了，反过来也一样。看 sm 版本，而不是看产品名。
 4. **库的选择大于手写**：FlashInfer、cuBLAS / CUTLASS、DeepGEMM、AITER、MLX 已经覆盖了绝大多数热点。值得手写的是**新模型带来的新算子**（新的 attention 变体、新的量化格式、新的融合模式），这也是向 FlashInfer 这类库贡献的主要方向。
 
+## 源码与资料
+
+**库（固定 commit）**：[[flashinfer]] · [[fa|flash-attention]] · [[deepgemm|DeepGEMM]] · [[deepep|DeepEP]] · [[flashmla|FlashMLA]] · [[cutlass|CUTLASS]] · [[sage|SageAttention]] · [[fla|flash-linear-attention]] · [[aiter|AITER]] · [[mlx|MLX]] · [[vllm|vLLM]] · [[sglang|SGLang]]
+
+**各代 attention 的代表实现**：[[fa:csrc/flash_attn/src/flash_fwd_kernel.h|FA2 前向]] · [[fa:hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp|FA3 Hopper 主循环（TMA + wgmma + warp specialization）]] · [[fa:flash_attn/cute/flash_fwd_sm100.py|FA4 Blackwell（CuTe DSL）]] · [[flashinfer:include/flashinfer/attention/prefill.cuh|FlashInfer prefill]] · [[flashinfer:include/flashinfer/attention/decode.cuh|FlashInfer decode]] · [[mlx:mlx/backend/metal/kernels/sdpa_vector.h|MLX sdpa_vector]] · [[sage:sageattention3_blackwell/README.md|SageAttention3（FP4，Blackwell）]]
+
+**GEMM / MoE / 线性 attention**：[[deepgemm:deep_gemm/include/deep_gemm/impls/sm90_fp8_gemm_1d2d.cuh|DeepGEMM SM90 FP8]] · [[deepgemm:deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh|DeepGEMM SM100 Mega MoE]] · [[vllm:vllm/model_executor/layers/fused_moe/fused_moe.py@fused_moe_kernel|vLLM Triton fused_moe]] · [[flashinfer:flashinfer/fused_moe/|FlashInfer fused_moe]] · [[fla:fla/ops/gated_delta_rule/chunk.py|FLA GDN chunk]] · [[mlx:mlx/backend/metal/kernels/quantized.h|MLX 量化 matmul]]
+
+**serving 框架怎么接 FlashInfer**：[[vllm:vllm/v1/attention/backends/flashinfer.py|vLLM FlashInfer 后端]] · [[sglang:python/sglang/srt/layers/attention/flashinfer_backend.py|SGLang FlashInfer 后端]]
+
 ## 来源
 
 - FlashAttention-4（Blackwell，CuTe DSL）：[论文 arXiv 2603.05451](https://arxiv.org/pdf/2603.05451.pdf) · [MLSys 2026](https://proceedings.mlsys.org/paper_files/paper/2026/file/ae8b0b5838ba510daff1198474e7b984-Paper-Conference.pdf)

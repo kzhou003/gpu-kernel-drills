@@ -19,6 +19,10 @@ from pathlib import Path
 
 from markdown_it import MarkdownIt
 
+import sources as SRC
+
+LINK_ERRORS: list[str] = []
+
 ROOT = Path(__file__).resolve().parent.parent
 CONTENT = ROOT / "content"
 
@@ -117,7 +121,7 @@ def code_block(path: str, title: str = "") -> str:
 
 
 def md(text: str) -> str:
-    out = MD.render(text)
+    out = MD.render(SRC.render(text, LINK_ERRORS))
     out = out.replace("<table>", '<div class="table-wrap"><table>').replace("</table>", "</table></div>")
     return out
 
@@ -263,5 +267,8 @@ def page():
 
 if __name__ == "__main__":
     out = ROOT / "index.html"
-    out.write_text(page(), encoding="utf-8")
+    html_out = page()
+    if LINK_ERRORS:
+        raise SystemExit("unresolved source links:\n  " + "\n  ".join(sorted(set(LINK_ERRORS))))
+    out.write_text(html_out, encoding="utf-8")
     print("built", out, f"{out.stat().st_size // 1024} KB")

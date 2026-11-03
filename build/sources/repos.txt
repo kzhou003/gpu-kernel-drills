@@ -1,0 +1,16 @@
+flashinfer flashinfer-ai/flashinfer
+vllm vllm-project/vllm
+sglang sgl-project/sglang
+triton triton-lang/triton
+cutlass NVIDIA/cutlass
+fa Dao-AILab/flash-attention
+deepgemm deepseek-ai/DeepGEMM
+deepep deepseek-ai/DeepEP
+flashmla deepseek-ai/FlashMLA
+mlx ml-explore/mlx
+fla fla-org/flash-linear-attention
+sage thu-ml/SageAttention
+cudasamples NVIDIA/cuda-samples
+aiter ROCm/aiter
+pytorch pytorch/pytorch
+puzzles srush/Triton-Puzzles

@@ -15,18 +15,20 @@ lede: 做完这些题之后：继续深入的方向、源码阅读路线和参�
 
 ## 源码阅读路线（按本套题的顺序）
 
+所有链接都固定在某个 commit 上，行号不会因为上游改动而漂移；想看最新版本，在 GitHub 页面按 `y` 切换，或把 URL 中的 commit 换成 `main`。
+
 | 题目 | FlashInfer | 其他 |
 |---|---|---|
-| T2、T3、F3 | `include/flashinfer/norm.cuh`、`activation.cuh`；`flashinfer/triton/norm.py` | vLLM `csrc/layernorm_kernels.cu` |
-| T5 | `include/flashinfer/attention/prefill.cuh` | Triton 官方 `06-fused-attention.py`；flash-attention 仓库 |
-| L1、F1 | `include/flashinfer/page.cuh`；`flashinfer/page.py`（`append_paged_kv_cache`） | vLLM `csrc/cache_kernels.cu`（`reshape_and_cache_flash`） |
-| L2、L3、F1 | `include/flashinfer/attention/decode.cuh`、`scheduler.cuh`；`flashinfer/decode.py` 的 `plan` | vLLM `csrc/attention/paged_attention_v2.cu` |
-| F2 | `include/flashinfer/attention/cascade.cuh`；`flashinfer/cascade.py` | |
-| F4 | `include/flashinfer/sampling.cuh`、`topk.cuh`；`flashinfer/sampling.py` | |
-| M1、M2 | `flashinfer/fused_moe/`、`cutlass_fused_moe` | vLLM `model_executor/layers/fused_moe/fused_moe.py`、`csrc/moe/moe_align_sum_kernels.cu` |
-| M3 | `flashinfer/deep_gemm.py`、`gemm/` 中的 FP8 groupwise GEMM | DeepGEMM 仓库；vLLM `w8a8_block_fp8_matmul` |
-| G2 | `flashinfer/cute_dsl/` | CUTLASS `python/pycute/`、`include/cute/layout.hpp` |
-| X1–X3 | — | MLX `mlx/backend/metal/kernels/`（`softmax.h`、`steel/`、`quantized.h`、`sdpa_vector.h`） |
+| T2、T3、F3 | [[flashinfer:include/flashinfer/norm.cuh@RMSNormKernel]] · [[flashinfer:include/flashinfer/activation.cuh]] · [[flashinfer:flashinfer/triton/norm.py]] | [[vllm:csrc/layernorm_kernels.cu]] · [[triton:python/tutorials/02-fused-softmax.py]] · [[triton:python/tutorials/05-layer-norm.py]] |
+| T5 | [[flashinfer:include/flashinfer/attention/prefill.cuh]] | [[triton:python/tutorials/06-fused-attention.py]] · [[fa:hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp|FA3]] · [[fa:flash_attn/cute/flash_fwd_sm100.py|FA4]] |
+| L1、F1 | [[flashinfer:include/flashinfer/page.cuh]] · [[flashinfer:flashinfer/page.py@append_paged_kv_cache]] | [[vllm:csrc/cache_kernels.cu@reshape_and_cache_flash_kernel]] |
+| L2、L3、F1 | [[flashinfer:include/flashinfer/attention/decode.cuh]] · [[flashinfer:include/flashinfer/attention/scheduler.cuh]] · [[flashinfer:flashinfer/decode.py@BatchDecodeWithPagedKVCacheWrapper]] | [[vllm:vllm/v1/attention/ops/triton_decode_attention.py]] · [[sglang:python/sglang/kernels/ops/attention/decode_attention.py]] |
+| F2 | [[flashinfer:include/flashinfer/attention/cascade.cuh]] · [[flashinfer:flashinfer/cascade.py@merge_state]] | |
+| F4 | [[flashinfer:include/flashinfer/sampling.cuh@TopPRenormProb]] · [[flashinfer:include/flashinfer/topk.cuh]] · [[flashinfer:flashinfer/sampling.py@top_p_renorm_probs]] | [[vllm:vllm/v1/sample/ops/topk_topp_sampler.py]] |
+| M1、M2 | [[flashinfer:flashinfer/fused_moe/]] | [[vllm:vllm/model_executor/layers/fused_moe/fused_moe.py@fused_moe_kernel]] · [[vllm:csrc/moe/moe_align_sum_kernels.cu]] |
+| M3 | [[flashinfer:flashinfer/deep_gemm.py]] | [[deepgemm:deep_gemm/include/deep_gemm/impls/sm90_fp8_gemm_1d2d.cuh]] · [[vllm:vllm/model_executor/layers/quantization/utils/fp8_utils.py@w8a8_triton_block_scaled_mm]] |
+| G1、G2 | [[flashinfer:flashinfer/cute_dsl/]] | [[triton:python/tutorials/gluon/02-layouts.py]] · [[cutlass:media/docs/cpp/cute/02_layout_algebra.md]] · [[cutlass:operators/cutlass/operators/fusion/pycute/layout.py@composition]] |
+| X1–X3 | — | [[mlx:mlx/backend/metal/kernels/softmax.h@softmax_looped]] · [[mlx:mlx/backend/metal/kernels/steel/gemm/mma.h]] · [[mlx:mlx/backend/metal/kernels/quantized.h]] · [[mlx:mlx/backend/metal/kernels/sdpa_vector.h]] |
 
 ## 参考资料
 

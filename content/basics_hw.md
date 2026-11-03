@@ -71,3 +71,10 @@ AI = FLOPs / 从 global memory 读写的字节数
 ::: callout ok 衡量一个 kernel 好不好
 memory-bound 的 kernel 算 **有效带宽 = 必须读写的字节 / 时间**，和峰值带宽比；compute-bound 的算 **TFLOP/s**，和峰值算力比。只说“比 PyTorch 快 1.3 倍”是不够的：要能说出离硬件上限还差多少。`bench.py` 对每题都打印这两种数字之一。
 :::
+
+## 源码与资料
+
+**文档**：[CUDA C++ Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html) · [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html) · [How to Access Global Memory Efficiently](https://developer.nvidia.com/blog/how-access-global-memory-efficiently-cuda-c-kernels/) · [Using Shared Memory in CUDA C/C++](https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/) · [Roofline model](https://en.wikipedia.org/wiki/Roofline_model)
+
+**白皮书**：[NVIDIA H100 Tensor Core GPU Architecture](https://resources.nvidia.com/en-us-tensor-core) · [NVIDIA Blackwell Architecture](https://resources.nvidia.com/en-us-blackwell-architecture)
+

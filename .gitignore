@@ -7,3 +7,4 @@ build/*.tmp
 env.sh
 .venv-mlx/
 .DS_Store
+build/sources/files/

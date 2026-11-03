@@ -106,3 +106,10 @@ y = mod.my_op(x)
 - 用 PyTorch 当前的 stream 启动，kernel 才会和前后的 torch 操作正确排序。
 - 第一次编译约 30–60 秒，之后命中缓存（`~/.cache/torch_extensions`）。
 - kernel 内部的越界访问通常不会立刻报错，而是在**下一个**同步点报 `illegal memory access`。调试时设 `CUDA_LAUNCH_BLOCKING=1`，或者用 `compute-sanitizer python -m pytest ...`。
+
+## 源码与资料
+
+**文档**：[CUDA C++ Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html) · [An Even Easier Introduction to CUDA](https://developer.nvidia.com/blog/even-easier-introduction-cuda/) · [Compute Sanitizer](https://docs.nvidia.com/compute-sanitizer/ComputeSanitizer/index.html) · [PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html)
+
+**源码**：[[pytorch:torch/utils/cpp_extension.py@load_inline]] · [[cudasamples:cpp/0_Introduction/vectorAdd/vectorAdd.cu]] · [[cudasamples:cpp/2_Concepts_and_Techniques/reduction/reduction_kernel.cu]] · [[flashinfer:include/flashinfer/vec_dtypes.cuh]]（FlashInfer 的向量化加载工具）
+

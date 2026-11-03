@@ -52,3 +52,10 @@ ms = start.elapsed_time(end) / 100
 ::: callout ok 一次只改一个因素
 每次优化只改一件事（block 大小、num_warps、加 padding、加 tiling…），测一次，记下数字和原因。做完一题，用三五行写下“瓶颈是什么、改了什么、提升多少、离上限还差多少”。这份记录就是原计划里每题的 README.md。
 :::
+
+## 源码与资料
+
+**文档**：[Nsight Compute](https://docs.nvidia.com/nsight-compute/NsightCompute/index.html) · [Nsight Systems](https://docs.nvidia.com/nsight-systems/UserGuide/index.html) · [Compute Sanitizer](https://docs.nvidia.com/compute-sanitizer/ComputeSanitizer/index.html) · [torch.testing.assert_close](https://docs.pytorch.org/docs/stable/testing.html)
+
+**源码**：[[triton:python/triton/testing.py@do_bench]] · [[pytorch:torch/testing/_comparison.py@assert_close]] · [[flashinfer:flashinfer/testing/utils.py@bench_gpu_time]]（FlashInfer 的 CUPTI 计时）
+

@@ -86,3 +86,10 @@ copy_kernel[(triton.cdiv(n, 512),)](src, dst, n, BLOCK=512, layout=layout, num_w
 ```
 
 `BlockedLayout(size_per_thread=[4], threads_per_warp=[32], warps_per_cta=[4])` 的意思是：每个线程拿 4 个连续元素（正好一次 16 字节的向量化 load），一个 warp 覆盖 128 个元素，4 个 warp 覆盖 512 个。**G1** 用纯 Python 把这个映射算清楚：哪个元素在哪个 warp、哪个 lane、第几个寄存器，以及它对合并访存和归约代价的影响。理解了这一层，读 `ttgir` 和写 Gluon 都会容易很多。
+
+## 源码与资料
+
+**文档**：[Triton 文档首页](https://triton-lang.org/main/index.html) · [Tutorials 目录](https://triton-lang.org/main/getting-started/tutorials/index.html) · [triton.language API](https://triton-lang.org/main/python-api/triton.language.html)
+
+**源码**：[[triton:python/tutorials/01-vector-add.py]] · [[triton:python/triton/runtime/interpreter.py|interpreter.py（TRITON_INTERPRET）]] · [[triton:python/triton/runtime/autotuner.py@Autotuner]] · [[triton:python/tutorials/gluon/01-intro.py|Gluon 01-intro]] · [[triton:python/tutorials/gluon/02-layouts.py|Gluon 02-layouts]] · [[triton:python/tutorials/gluon/|全部 Gluon tutorials]] · [[puzzles|Triton-Puzzles]]
+

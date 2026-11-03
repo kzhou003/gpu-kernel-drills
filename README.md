@@ -14,7 +14,9 @@
 ./check.sh f2                # 测 mine/f2_merge_state.py
 ./check.sh f2 --solutions    # 测参考解
 ./check.sh f2 --bench        # 性能（NVIDIA GPU）；X 题用 .venv-mlx/bin/python bench_mlx.py
-python build/build.py        # 改了 content/ 或代码后重新生成 index.html（需要 markdown-it-py）
+python3 build/sources.py fetch   # 第一次构建前：按固定 commit 下载被引用的源码文件（需要 gh），并校验所有源码链接
+python3 build/check_links.py     # 检查文档 / 论文等外部链接
+python build/build.py            # 重新生成 index.html（需要 markdown-it-py；链接解析失败会直接报错）
 ```
 
 | 环境 | 怎么准备 |
@@ -22,6 +24,8 @@ python build/build.py        # 改了 content/ 或代码后重新生成 index.ht
 | NVIDIA GPU，没有系统 CUDA toolkit | `./setup_env.sh /path/to/python-with-torch && source env.sh`（pip 安装与 torch 同版本的 nvcc）；F 题再 `pip install flashinfer-python` |
 | 只有 CPU | Triton / L / F1–F4 / G / M1–M2 自动走 `TRITON_INTERPRET=1`；macOS 没有 triton wheel，用 `docker run -it -v $PWD:/w -w /w python:3.12-slim bash` |
 | Apple silicon | `python3 -m venv .venv-mlx && .venv-mlx/bin/pip install mlx numpy pytest`（arm64 Python） |
+
+页面中约 240 个源码链接都固定在 commit 上（`build/sources/pins.txt`，共 16 个仓库：FlashInfer、vLLM、SGLang、Triton、CUTLASS、flash-attention、DeepGEMM、MLX 等），`file@symbol` 形式的链接直接跳到定义所在的行。
 
 目录：`mine/` 你的代码 · `solutions/` 参考解 · `tests/` 验收 · `content/` 题面 · `build/` 页面生成。
 参考解已在 RTX 5090（torch 2.13 / CUDA 13.0 / Triton 3.7 / FlashInfer 0.7.2）和 Apple M2（MLX 0.32）上全部通过。
