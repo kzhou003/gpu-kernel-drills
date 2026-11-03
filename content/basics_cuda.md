@@ -146,6 +146,23 @@ cap: 所以用 `time.time()` 包住一次调用，测到的只是“下单”的
 不是“来多少箱货就雇多少工人”，而是雇固定数量的工人（SM 数 × k 个 block），每人做完一箱就去传送带上拿下一箱（`i += 总线程数`）。货多货少都用同一套班底，工人的私人账本（寄存器累加）还能一直记下去。
 :::
 
+<!-- wave2 -->
+::: flow shared memory 的标准节奏
+n ld 0 0 "协作加载 tile" "每个线程搬一部分" k=acc
+n s1 1.15 0 "__syncthreads()" "等所有人搬完" k=todo
+n cmp 2.3 0 "计算" "读别人搬来的数据" k=pass
+n s2 3.45 0 "__syncthreads()" "等所有人用完" k=todo
+e ld -> s1
+e s1 -> cmp
+e cmp -> s2
+e s2:b -> ld:b "下一个 tile" anim
+cap: 第二个 sync 很容易漏：没有它，跑得快的线程会在别人还在读的时候，把下一个 tile 写进同一块 shared memory。
+:::
+::: callout analogy atomicAdd 像只有一个窗口的银行
+很多人往同一个账户存钱，只有一个柜员窗口（同一地址上的原子操作会串行）：人越多队越长。所以先让每个小组把钱凑齐（block 内归约），每组只派一个人去排队。
+浮点数的“零头”跟存钱顺序有关，谁先到窗口不确定，所以每次结果的最后几位可能不同。
+:::
+
 ## 源码与资料
 
 **文档**：[CUDA C++ Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html) · [An Even Easier Introduction to CUDA](https://developer.nvidia.com/blog/even-easier-introduction-cuda/) · [Compute Sanitizer](https://docs.nvidia.com/compute-sanitizer/ComputeSanitizer/index.html) · [PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html)

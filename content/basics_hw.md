@@ -115,6 +115,24 @@ HBM 是街对面的仓库（大、远），L2 是楼下储藏室，shared memory
 加工量少（elementwise、decode）时，机器总在等原料：memory-bound；加工量大（大 GEMM、prefill）时，原料堆在门口等机器：compute-bound。先判断卡在哪边，再决定是修路还是买机器。
 :::
 
+<!-- wave2 -->
+::: flow occupancy：资源决定能同时驻留多少 warp
+n reg 0 0 "每线程寄存器数" "ncu: Registers" k=acc
+n smem 0 1 "每 block shared memory" "ncu: Shared Memory" k=acc w=1.1
+n bs 0 2 "block 大小" "线程数" k=acc
+n lim 1.4 1 "每个 SM 能放几个 block" "取三者最紧的那个" k=warn w=1.2
+n warps 2.8 1 "驻留 warp 数" "= occupancy × 上限" k=vio
+n hide 4 1 "隐藏访存延迟" "warp 等数据时换人" k=pass
+e reg -> lim
+e smem -> lim
+e bs -> lim
+e lim -> warps
+e warps -> hide
+:::
+::: callout analogy 合并访存像拼车
+一个 warp 发出一次 load，就像 32 个人一起叫车：如果大家住同一栋楼（地址连续），4 辆车（4 个 32 字节 sector）就能全部拉走；如果 32 个人散住在城市各处（跨步访问），就要派 32 辆车，每辆只坐一个人。车（带宽）的数量是固定的，坐不满就是浪费。
+:::
+
 ## 源码与资料
 
 **文档**：[CUDA C++ Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html) · [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html) · [How to Access Global Memory Efficiently](https://developer.nvidia.com/blog/how-access-global-memory-efficiently-cuda-c-kernels/) · [Using Shared Memory in CUDA C/C++](https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/) · [Roofline model](https://en.wikipedia.org/wiki/Roofline_model)

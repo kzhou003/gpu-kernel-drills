@@ -28,6 +28,34 @@ Part 0  基础 + 全景地图（模型 × 硬件 × 当前最优 kernel）
 
 **为什么这样排**：FlashInfer 的 kernel 本身就是 CUDA C++（以及越来越多的 CuTe DSL），它的 Python 生态、vLLM / SGLang 的大量 kernel 又是 Triton。所以先用 C、T 打基础，再用 L 从零写出 paged attention，最后在 F 里对着 FlashInfer 的真实接口实现并对拍。进阶部分覆盖面试和实际工作中同样常见的其他方向：CuTe（CUTLASS 3/4、FlashAttention-4、DeepGEMM 都基于它）、MoE 与低精度、Apple 设备上的 MLX。
 
+## 路线图
+
+<!-- wave2 -->
+::: flow 整套路线
+cfg cw=176 nw=146
+n p0 0 1 "Part 0" "基础 + 全景地图" k=dark
+n c 1 0 "C · CUDA C++" "C1–C4" k=acc
+n t 2 0 "T · Triton" "T1–T5" k=acc
+n l 3 0 "L · 推理 attention" "L1–L3" k=vio
+n f 4 0 "F · FlashInfer" "F1–F5 · 对拍 + 贡献" k=pass w=1.15
+n g 2 2 "G · Layout / CuTe" "G1–G2" k=teal
+n m 3 2 "M · MoE / FP8" "M1–M3" k=warn
+n x 4 2 "X · MLX / Metal" "X1–X3" k=todo
+n iv 5.2 1 "面试题库" "+ 附录" k=dark
+g 1 0 4 0 "核心"
+g 2 2 4 2 "进阶"
+e p0 -> c
+e c -> t
+e t -> l
+e l -> f
+e t -> g dash
+e g -> m dash
+e m -> x dash
+e f -> iv
+e x -> iv dash
+cap: 实线是建议的主线顺序；虚线的进阶部分可以穿插在核心之后的任何时间做。
+:::
+
 ## 每道题的结构
 
 | 小节 | 作用 |

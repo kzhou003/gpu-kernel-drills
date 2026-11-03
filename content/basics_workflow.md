@@ -75,6 +75,26 @@ e opt -> doc dash
 同时动三个推子，声音变好了也说不清是哪个起了作用。kernel 调优也一样：每次只改一件事（block 大小、num_warps、padding……），测一次，记下来。
 :::
 
+<!-- wave2 -->
+::: flow 读 ncu 报告：三个数字定方向
+n mem 0 0 "Memory Throughput 高" "> 80% 峰值" k=warn w=1.05
+n sm 0 1 "SM / Tensor 吞吐高" "" k=acc w=1.05
+n low 0 2 "两个都不高" "" k=todo
+n mb 1.4 0 "已到带宽上限" "只能少读字节" k=warn
+n cb 1.4 1 "已到算力上限" "换更快的指令 / 精度" k=acc w=1.1
+n stall 1.4 2 "看 Warp State" "warp 在等什么？" k=todo
+n ls 2.8 1.6 "Long Scoreboard" "等 global memory" k=vio w=1.05
+n bar 2.8 2.6 "Barrier / MIO" "sync 或 smem 排队" k=vio
+e mem -> mb
+e sm -> cb
+e low -> stall
+e stall -> ls "加并行 / 预取"
+e stall -> bar "减少同步 / 冲突"
+:::
+::: callout analogy ncu 是体检报告
+不要一上来就“吃补药”（盲目调参数）。先看体检报告：带宽已经满了（血压到顶），再快的计算也没用；两项都不高，说明问题在“等待”上，就去看 warp 在等什么：是在等内存（Long Scoreboard），还是在等同伴（Barrier）。
+:::
+
 ## 源码与资料
 
 **文档**：[Nsight Compute](https://docs.nvidia.com/nsight-compute/NsightCompute/index.html) · [Nsight Systems](https://docs.nvidia.com/nsight-systems/UserGuide/index.html) · [Compute Sanitizer](https://docs.nvidia.com/compute-sanitizer/ComputeSanitizer/index.html) · [torch.testing.assert_close](https://docs.pytorch.org/docs/stable/testing.html)

@@ -120,6 +120,23 @@ CUDA 里你给每个工人（线程）写说明书：“你是第几号，你负
 `mask` 就是最后一箱不满，空格子贴上“跳过”标签；`tl.constexpr` 是模具尺寸：换尺寸就要重新开模（重新编译）。
 :::
 
+<!-- wave2 -->
+::: flow autotune：第一次调用时把每个 config 都试一遍
+n call 0 0.5 "kernel[grid](M, N, K)" "" k=acc w=1.15
+n key 1.35 0.5 "这个 key 见过吗？" "key = (M, N, K)" k=warn w=1.05
+n try 2.6 0 "每个 config 跑一遍计时" "BLOCK · num_warps · num_stages" k=vio w=1.35
+n best 4.1 0 "缓存最快的 config" "" k=teal
+n run 2.6 1 "直接用缓存的 config" "" k=pass w=1.25
+e call -> key
+e key -> try "没见过"
+e try -> best
+e best:b -> run:r
+e key -> run "见过"
+:::
+::: callout analogy num_stages 是提前备料
+厨师做第 k 道菜时，帮工已经在洗第 k+1、k+2 道的菜（num_stages = 3）：计算和搬运同时进行。备得越多越不会断档，但每一份备料都要占一块料理台（shared memory），台子放满了，能同时开工的厨师（occupancy）就少了。
+:::
+
 ## 源码与资料
 
 **文档**：[Triton 文档首页](https://triton-lang.org/main/index.html) · [Tutorials 目录](https://triton-lang.org/main/getting-started/tutorials/index.html) · [triton.language API](https://triton-lang.org/main/python-api/triton.language.html)

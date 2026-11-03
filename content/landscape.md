@@ -166,6 +166,27 @@ e cb -> cb1
 B200 工厂里有专门的机械臂（tcgen05 + TMEM）和自动叉车（TMA），最好的工艺（FA4、DeepGEMM）是围绕它们设计的；RTX 5090 的工厂叫同一个品牌，却没有这台机械臂，所以那套工艺搬过去根本开不了工。选 kernel 时看 sm 版本，不看产品名。
 :::
 
+<!-- wave2 -->
+::: flow NVIDIA 架构代际：哪些能力是新加的
+cfg cw=186 nw=156
+n a100 0 0.5 "sm_80 · A100" "mma.sync · cp.async" k=acc
+n ada 1 0.5 "sm_89 · 4090 / L40S" "+ FP8 mma.sync" k=acc
+n h100 2 0 "sm_90a · H100" "+ wgmma · TMA · 集群" k=vio
+n b200 3 0 "sm_100 · B200" "+ tcgen05 · TMEM · FP4" k=pass
+n r5090 3 1 "sm_120 · RTX 5090" "mma.sync + FP4 / FP6" k=warn
+n fa3 4.1 0 "FA3 · FA4 · DeepGEMM" "依赖 wgmma / tcgen05" k=pass w=1.1
+n fa2 4.1 1 "FA2 类 · Triton" "SageAttention3" k=warn w=1.1
+e a100 -> ada
+e ada -> h100
+e h100 -> b200
+e ada -> r5090 "没有 wgmma / tcgen05" dash
+e b200 -> fa3
+e r5090 -> fa2
+:::
+::: callout analogy 同名不同厂
+“Blackwell”这个名字同时用在 B200 和 RTX 5090 上，就像同一个汽车品牌既有赛车也有家用车：品牌一样，发动机不同。B200 有 tcgen05 这台“涡轮”，为它调校的 kernel 拿到 5090 上点不着火；5090 上能用的是更接近上一代（Ada）的 `mma.sync`，只是多了 FP4。
+:::
+
 ## 源码与资料
 
 **库（固定 commit）**：[[flashinfer]] · [[fa|flash-attention]] · [[deepgemm|DeepGEMM]] · [[deepep|DeepEP]] · [[flashmla|FlashMLA]] · [[cutlass|CUTLASS]] · [[sage|SageAttention]] · [[fla|flash-linear-attention]] · [[aiter|AITER]] · [[mlx|MLX]] · [[vllm|vLLM]] · [[sglang|SGLang]]
