@@ -143,25 +143,26 @@ def parse_flow(title, lines):
             continue
         tok = shlex.split(line)
         kind, rest = tok[0], tok[1:]
-        opts = {k: v for k, _, v in (t.partition("=") for t in rest if "=" in t)}
-        flags = {t for t in rest if "=" not in t}
+        is_opt = lambda t: re.fullmatch(r"(k|w|cw|rh|nw)=\S+", t) is not None   # only real options, not "i = 2·256"
+        opts = {k: v for k, _, v in (t.partition("=") for t in rest if is_opt(t))}
+        flags = {t for t in rest if not is_opt(t)}
         if kind == "cfg":
             spec["cfg"] = {k: float(v) for k, v in opts.items()}
         elif kind == "n":
             nid, c, r = rest[0], float(rest[1]), float(rest[2])
-            texts = [t for t in rest[3:] if "=" not in t]
+            texts = [t for t in rest[3:] if not is_opt(t)]
             spec["nodes"].append({"id": nid, "c": c, "r": r, "t": texts[0] if texts else nid,
                                   "s": texts[1] if len(texts) > 1 else "", "k": opts.get("k", ""),
                                   "w": float(opts.get("w", 1))})
         elif kind == "e":
             a, arrow, b = rest[0], rest[1], rest[2]
             assert arrow == "->", line
-            texts = [t for t in rest[3:] if "=" not in t and t not in ("anim", "dash")]
+            texts = [t for t in rest[3:] if not is_opt(t) and t not in ("anim", "dash")]
             spec["edges"].append({"a": a, "b": b, "t": texts[0] if texts else "", "k": opts.get("k", ""),
                                   "anim": "anim" in flags, "dash": "dash" in flags})
         elif kind == "g":
             c0, r0, c1, r1 = map(float, rest[:4])
-            texts = [t for t in rest[4:] if "=" not in t]
+            texts = [t for t in rest[4:] if not is_opt(t)]
             spec["groups"].append({"c0": c0, "r0": r0, "c1": c1, "r1": r1, "t": texts[0] if texts else "",
                                    "k": opts.get("k", "")})
         else:
