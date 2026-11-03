@@ -1,0 +1,9 @@
+__pycache__/
+.pytest_cache/
+*.so
+build/*.tmp
+.venv/
+.cuda_home/
+env.sh
+.venv-mlx/
+.DS_Store
