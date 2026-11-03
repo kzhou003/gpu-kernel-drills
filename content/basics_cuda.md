@@ -107,6 +107,45 @@ y = mod.my_op(x)
 - 第一次编译约 30–60 秒，之后命中缓存（`~/.cache/torch_extensions`）。
 - kernel 内部的越界访问通常不会立刻报错，而是在**下一个**同步点报 `illegal memory access`。调试时设 `CUDA_LAUNCH_BLOCKING=1`，或者用 `compute-sanitizer python -m pytest ...`。
 
+## 图解与类比
+
+::: flow load_inline：一个 .cu 文件怎么变成 torch 算子
+n cu 0 0 "你的 .cu" "kernel + host 函数" k=acc
+n decl 0 1 "C++ 声明" "cpp_sources" k=acc
+n nvcc 1 0 "nvcc" "→ cuda.o" k=vio
+n cxx 1 1 "c++" "→ main.o（pybind）" k=vio
+n so 2 0.5 "ninja 链接" "→ 扩展 .so" k=warn
+n py 3 0.5 "Python 模块" "mod.my_op(x)" k=pass
+n cache 2 1.65 "~/.cache/torch_extensions" "按名字 + 源码缓存" k=ghost w=1.35
+e cu -> nvcc
+e decl -> cxx "生成绑定"
+e nvcc -> so
+e cxx -> so
+e so -> py "import"
+e so -> cache dash
+cap: 第一次调用要编译（30–60 秒），之后直接加载缓存。本仓库的 `common/cuda_ext.py` 把源码哈希放进模块名，所以改完 .cu 会自动重新编译。
+:::
+::: flow kernel launch 是异步的
+n py 0 0 "Python 调用" "立即返回" k=acc
+n q 1 0 "CUDA stream" "kernel 排队" k=warn
+n gpu 2 0 "GPU 执行" "grid 分发到 SM" k=pass
+n sync 3 0 "同步点" ".item() / synchronize()" k=todo w=1.1
+e py -> q "enqueue" anim
+e q -> gpu "按顺序执行"
+e gpu -> sync "完成后才拿到结果"
+cap: 所以用 `time.time()` 包住一次调用，测到的只是“下单”的时间；越界访问的报错也常常在后面某个同步点才出现。
+:::
+::: callout analogy launch 就是给工厂下订单
+`kernel<<<...>>>` 像在网上下单：点完“提交”就返回了，货（结果）还在路上。要拿到货（读结果、打印、`.item()`），就得等快递到门口（同步）。
+所以计时要在“收货”时按秒表（CUDA event + synchronize），而不是在“下单”时。
+:::
+::: callout analogy __syncthreads 是集体合影
+摄影师要等所有人都站好才按快门。如果有人被安排在 `if` 分支里永远不会来，摄影师就一直等下去（死锁）。所以 `__syncthreads()` 必须放在所有线程都会执行到的地方。
+:::
+::: callout analogy grid-stride loop 是固定人数的流水线
+不是“来多少箱货就雇多少工人”，而是雇固定数量的工人（SM 数 × k 个 block），每人做完一箱就去传送带上拿下一箱（`i += 总线程数`）。货多货少都用同一套班底，工人的私人账本（寄存器累加）还能一直记下去。
+:::
+
 ## 源码与资料
 
 **文档**：[CUDA C++ Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html) · [An Even Easier Introduction to CUDA](https://developer.nvidia.com/blog/even-easier-introduction-cuda/) · [Compute Sanitizer](https://docs.nvidia.com/compute-sanitizer/ComputeSanitizer/index.html) · [PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html)

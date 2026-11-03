@@ -14,7 +14,9 @@ Line macro:
 Each content file starts with `lede: one sentence`.
 """
 import html
+import json
 import re
+import shlex
 from pathlib import Path
 
 from markdown_it import MarkdownIt
@@ -120,6 +122,67 @@ def code_block(path: str, title: str = "") -> str:
             f'<pre><code class="language-{lang}">{html.escape(text)}</code></pre></div>')
 
 
+
+def parse_flow(title, lines):
+    """Tiny diagram DSL -> JSON for the React-Flow-style renderer in template.html.
+
+        cfg cw=200 rh=90 nw=160               column width, row height, default node width (px)
+        n id col row "title" ["sub"] [k=acc] [w=1.4]
+        e a[:side] -> b[:side] ["label"] [k=acc] [anim] [dash]     side: t b l r (auto if omitted)
+        g col0 row0 col1 row1 "label" [k=acc]                       group box around a grid range
+        cap: caption text (markdown inline allowed)
+    """
+    spec = {"title": title, "nodes": [], "edges": [], "groups": [], "cfg": {}}
+    caption = ""
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("cap:"):
+            caption = line[4:].strip()
+            continue
+        tok = shlex.split(line)
+        kind, rest = tok[0], tok[1:]
+        opts = {k: v for k, _, v in (t.partition("=") for t in rest if "=" in t)}
+        flags = {t for t in rest if "=" not in t}
+        if kind == "cfg":
+            spec["cfg"] = {k: float(v) for k, v in opts.items()}
+        elif kind == "n":
+            nid, c, r = rest[0], float(rest[1]), float(rest[2])
+            texts = [t for t in rest[3:] if "=" not in t]
+            spec["nodes"].append({"id": nid, "c": c, "r": r, "t": texts[0] if texts else nid,
+                                  "s": texts[1] if len(texts) > 1 else "", "k": opts.get("k", ""),
+                                  "w": float(opts.get("w", 1))})
+        elif kind == "e":
+            a, arrow, b = rest[0], rest[1], rest[2]
+            assert arrow == "->", line
+            texts = [t for t in rest[3:] if "=" not in t and t not in ("anim", "dash")]
+            spec["edges"].append({"a": a, "b": b, "t": texts[0] if texts else "", "k": opts.get("k", ""),
+                                  "anim": "anim" in flags, "dash": "dash" in flags})
+        elif kind == "g":
+            c0, r0, c1, r1 = map(float, rest[:4])
+            texts = [t for t in rest[4:] if "=" not in t]
+            spec["groups"].append({"c0": c0, "r0": r0, "c1": c1, "r1": r1, "t": texts[0] if texts else "",
+                                   "k": opts.get("k", "")})
+        else:
+            raise SystemExit(f"flow: unknown line {line!r}")
+    ids = {n["id"] for n in spec["nodes"]}
+    cw, rh, nw = spec["cfg"].get("cw", 200), spec["cfg"].get("rh", 88), spec["cfg"].get("nw", 160)
+    boxes = [(n["id"], n["c"] * cw, n["r"] * rh, n["c"] * cw + nw * n["w"], n["r"] * rh + (52 if n["s"] else 38)) for n in spec["nodes"]]
+    for i, A in enumerate(boxes):                       # layout lint: nodes must not overlap (12 px gap)
+        for B in boxes[i + 1:]:
+            if A[1] < B[3] + 12 and B[1] < A[3] + 12 and A[2] < B[4] + 8 and B[2] < A[4] + 8:
+                raise SystemExit(f"flow {title!r}: nodes {A[0]!r} and {B[0]!r} overlap")
+    for e in spec["edges"]:
+        for end in (e["a"], e["b"]):
+            if end.split(":")[0] not in ids:
+                raise SystemExit(f"flow {title!r}: edge references unknown node {end!r}")
+    cap = MD.renderInline(SRC.render(caption, LINK_ERRORS)) if caption else ""
+    return (f'<figure class="flow"><div class="flow-head">{html.escape(title)}<span class="flow-hint">悬停节点查看连接</span></div>'
+            f'<div class="flow-body" data-flow="{html.escape(json.dumps(spec, ensure_ascii=False))}"></div>'
+            + (f"<figcaption>{cap}</figcaption>" if cap else "") + "</figure>")
+
+
 def md(text: str) -> str:
     out = MD.render(SRC.render(text, LINK_ERRORS))
     out = out.replace("<table>", '<div class="table-wrap"><table>').replace("</table>", "</table></div>")
@@ -159,9 +222,12 @@ def render(lines) -> str:
         elif name == "answer":
             parts.append(f'<details class="answer"><summary>{html.escape(args or "显示答案")}</summary>'
                          f'<div class="body">{render(inner)}</div></details>')
+        elif name == "flow":
+            parts.append(parse_flow(args, inner))
         elif name == "callout":
             kind, _, title = args.partition(" ")
-            t = f'<div class="callout-title">{html.escape(title)}</div>' if title else ""
+            label = "类比 · " if kind == "analogy" else ""
+            t = f'<div class="callout-title">{label}{html.escape(title)}</div>' if (title or label) else ""
             parts.append(f'<div class="callout {kind}">{t}{render(inner)}</div>')
         else:
             raise SystemExit(f"unknown container ::: {name}")

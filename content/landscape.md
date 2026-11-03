@@ -114,6 +114,58 @@ MLA 把 K、V 压缩到一个低秩 latent 里，KV cache 小很多。decode 时
 3. **硬件代际决定可选项**：B200 上最好的 kernel 在 5090 上可能根本跑不了，反过来也一样。看 sm 版本，而不是看产品名。
 4. **库的选择大于手写**：FlashInfer、cuBLAS / CUTLASS、DeepGEMM、AITER、MLX 已经覆盖了绝大多数热点。值得手写的是**新模型带来的新算子**（新的 attention 变体、新的量化格式、新的融合模式），这也是向 FlashInfer 这类库贡献的主要方向。
 
+## 图解与类比
+
+::: flow 一个 decoder layer 里有哪些 kernel
+cfg cw=182 nw=150
+n emb 0 0 "embedding" "gather"
+n n1 1 0 "RMSNorm" "融合小算子" k=teal
+n qkv 2 0 "QKV GEMM" "GEMM" k=acc
+n rope 3 0 "RoPE + 写 KV" "融合 · paged" k=teal
+n attn 4 0 "attention" "prefill / decode" k=vio
+n o 4 1 "O GEMM" "GEMM" k=acc
+n add1 3 1 "残差 + RMSNorm" "fused_add_rmsnorm" k=teal
+n up 2 1 "gate_up GEMM" "GEMM / MoE" k=acc
+n act 1 1 "SwiGLU" "silu_and_mul" k=teal
+n down 0 1 "down GEMM" "+ 残差" k=acc
+n head 0 2.2 "LM head" "GEMM" k=acc
+n samp 1 2.2 "采样" "top-k / top-p" k=warn
+g 0 0 4 1 "× L 层"
+e emb -> n1
+e n1 -> qkv
+e qkv -> rope
+e rope -> attn
+e attn -> o
+e o -> add1
+e add1 -> up
+e up -> act
+e act -> down
+e down -> head "最后一层之后" dash
+e head -> samp
+cap: 颜色对应 kernel 类别：蓝色 GEMM、紫色 attention、青色融合小算子、橙色采样。prefill 时蓝紫两类占大头；decode 时小算子的固定开销和 KV 读取变得显著。
+:::
+::: flow 这个 kernel 该往哪个方向优化？
+n q 0 1 "算术强度 AI" "FLOPs ÷ 字节" k=dark
+n mb 1.1 0 "AI < 拐点" "memory-bound" k=warn
+n tiny 1.1 1 "kernel < 10 us？" "batch 很小" k=todo
+n cb 1.1 2 "AI > 拐点" "compute-bound" k=acc
+n mb1 2.3 0 "少读字节" "融合 · 量化 · GQA / MLA" k=warn w=1.25
+n tiny1 2.3 1 "减少 launch" "CUDA graph · 融合 · PDL" k=todo w=1.25
+n cb1 2.3 2 "用满 Tensor Core" "tile · 流水线 · 新指令" k=acc w=1.25
+e q -> mb
+e q -> tiny
+e q -> cb
+e mb -> mb1
+e tiny -> tiny1
+e cb -> cb1
+:::
+::: callout analogy 生产线上最慢的工位决定产量
+把一次推理看成一条生产线：embedding → 十几道工序 × L 层 → 采样。哪个工位最慢，就去优化哪个；把一个只占 2% 时间的工位提速 4 倍，整条线只快 1.5%（扩散模型里 attention 只占小部分时就是这样）。
+:::
+::: callout analogy 换硬件就是换工厂
+B200 工厂里有专门的机械臂（tcgen05 + TMEM）和自动叉车（TMA），最好的工艺（FA4、DeepGEMM）是围绕它们设计的；RTX 5090 的工厂叫同一个品牌，却没有这台机械臂，所以那套工艺搬过去根本开不了工。选 kernel 时看 sm 版本，不看产品名。
+:::
+
 ## 源码与资料
 
 **库（固定 commit）**：[[flashinfer]] · [[fa|flash-attention]] · [[deepgemm|DeepGEMM]] · [[deepep|DeepEP]] · [[flashmla|FlashMLA]] · [[cutlass|CUTLASS]] · [[sage|SageAttention]] · [[fla|flash-linear-attention]] · [[aiter|AITER]] · [[mlx|MLX]] · [[vllm|vLLM]] · [[sglang|SGLang]]

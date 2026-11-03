@@ -53,6 +53,28 @@ ms = start.elapsed_time(end) / 100
 每次优化只改一件事（block 大小、num_warps、加 padding、加 tiling…），测一次，记下数字和原因。做完一题，用三五行写下“瓶颈是什么、改了什么、提升多少、离上限还差多少”。这份记录就是原计划里每题的 README.md。
 :::
 
+## 图解与类比
+
+::: flow 每个 kernel 都走的开发循环
+n ref 0 0 "PyTorch reference" "高精度" k=pass
+n naive 1 0 "最简实现" "先求正确" k=acc
+n test 2 0 "测试" "边界 shape / dtype" k=acc
+n bench 3 0 "benchmark" "GB/s · TFLOP/s" k=warn
+n prof 3 1 "profile" "ncu / nsys" k=warn
+n opt 2 1 "只改一个因素" "tile / warps / 融合" k=vio
+n doc 1 1 "记录" "数字 + 原因" k=teal
+e ref -> naive
+e naive -> test
+e test -> bench
+e bench -> prof
+e prof -> opt
+e opt -> test "回归测试" anim
+e opt -> doc dash
+:::
+::: callout analogy 调音台一次只推一个推子
+同时动三个推子，声音变好了也说不清是哪个起了作用。kernel 调优也一样：每次只改一件事（block 大小、num_warps、padding……），测一次，记下来。
+:::
+
 ## 源码与资料
 
 **文档**：[Nsight Compute](https://docs.nvidia.com/nsight-compute/NsightCompute/index.html) · [Nsight Systems](https://docs.nvidia.com/nsight-systems/UserGuide/index.html) · [Compute Sanitizer](https://docs.nvidia.com/compute-sanitizer/ComputeSanitizer/index.html) · [torch.testing.assert_close](https://docs.pytorch.org/docs/stable/testing.html)

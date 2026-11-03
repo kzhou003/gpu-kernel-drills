@@ -87,6 +87,39 @@ copy_kernel[(triton.cdiv(n, 512),)](src, dst, n, BLOCK=512, layout=layout, num_w
 
 `BlockedLayout(size_per_thread=[4], threads_per_warp=[32], warps_per_cta=[4])` 的意思是：每个线程拿 4 个连续元素（正好一次 16 字节的向量化 load），一个 warp 覆盖 128 个元素，4 个 warp 覆盖 512 个。**G1** 用纯 Python 把这个映射算清楚：哪个元素在哪个 warp、哪个 lane、第几个寄存器，以及它对合并访存和归约代价的影响。理解了这一层，读 `ttgir` 和写 Gluon 都会容易很多。
 
+## 图解与类比
+
+::: flow Triton 的编译管线
+n src 0 0 "@triton.jit 函数" "Python AST" k=acc
+n ttir 1 0 "TTIR" "块级张量运算" k=vio
+n ttgir 2 0 "TTGIR" "+ layout · smem · 流水线" k=vio
+n llir 3 0 "LLVM IR" "" k=vio
+n ptx 3 1 "PTX → cubin" "ptxas" k=warn
+n run 2 1 "launch" "grid × num_warps" k=pass
+n interp 0 1 "TRITON_INTERPRET=1" "NumPy 逐 program 执行" k=ghost w=1.2
+e src -> ttir
+e ttir -> ttgir "编译器决定 layout"
+e ttgir -> llir
+e llir -> ptx
+e ptx -> run
+e src -> interp "CPU 调试" dash
+cap: 你只写到 TTIR 这一层（块级运算）；TTGIR 里出现的 `#blocked`、`#mma`、`#shared` 就是编译器替你做的决定，G1 会教你读懂它们。
+:::
+::: flow 一个 program 怎么变成线程
+n prog 0 0.5 "program pid" "offs = pid·B + arange(B)" k=acc w=1.25
+n w0 1.6 0 "warp 0" "lane 0–31" k=vio
+n w1 1.6 1 "warp 1 …" "num_warps 个" k=vio
+n regs 2.8 0.5 "每线程若干寄存器" "sizePerThread" k=pass w=1.1
+e prog -> w0 "按 layout 切分"
+e prog -> w1
+e w0 -> regs
+e w1 -> regs
+:::
+::: callout analogy CUDA 写给工人，Triton 写给工头
+CUDA 里你给每个工人（线程）写说明书：“你是第几号，你负责第几个格子”。Triton 里你只给工头（program）写：“把这一箱（block）处理完”，工头自己决定怎么分给手下（num_warps × 32 个线程）、谁拿几个、怎么搬得最快。
+`mask` 就是最后一箱不满，空格子贴上“跳过”标签；`tl.constexpr` 是模具尺寸：换尺寸就要重新开模（重新编译）。
+:::
+
 ## 源码与资料
 
 **文档**：[Triton 文档首页](https://triton-lang.org/main/index.html) · [Tutorials 目录](https://triton-lang.org/main/getting-started/tutorials/index.html) · [triton.language API](https://triton-lang.org/main/python-api/triton.language.html)

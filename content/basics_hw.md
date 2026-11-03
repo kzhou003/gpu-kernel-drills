@@ -72,6 +72,49 @@ AI = FLOPs / 从 global memory 读写的字节数
 memory-bound 的 kernel 算 **有效带宽 = 必须读写的字节 / 时间**，和峰值带宽比；compute-bound 的算 **TFLOP/s**，和峰值算力比。只说“比 PyTorch 快 1.3 倍”是不够的：要能说出离硬件上限还差多少。`bench.py` 对每题都打印这两种数字之一。
 :::
 
+## 图解与类比
+
+::: flow 软件层级 ↔ 硬件层级
+n grid 0 0 "grid" "一次 kernel launch" k=acc
+n block 0 1 "block / program" "≤ 1024 线程" k=acc
+n warp 0 2 "warp" "32 线程同一条指令" k=acc
+n thread 0 3 "thread" "私有寄存器" k=acc
+n gpu 2 0 "GPU" "108–170 个 SM" k=vio
+n sm 2 1 "SM" "同时驻留多个 block" k=vio
+n sched 2 2 "warp 调度器" "每周期挑就绪的 warp" k=vio
+n core 2 3 "CUDA core / Tensor Core" "执行单元" k=vio w=1.25
+e grid -> block "拆成"
+e block -> warp "拆成"
+e warp -> thread "拆成"
+e grid -> gpu "分发到" dash
+e block -> sm "整块住在一个 SM" dash
+e warp -> sched "被调度" dash
+e thread -> core "执行" dash
+cap: 左边是你写代码时的抽象，右边是它们在硬件上落在哪里。block 内的线程能共享 shared memory、能同步，正是因为整个 block 住在同一个 SM 上。
+:::
+::: flow 内存层次：数据从远到近
+n hbm 0 0 "HBM（global）" "1.8–3.4 TB/s · 几十 GB" k=todo w=1.1
+n l2 1.2 0 "L2 cache" "40–50 MB · 全 GPU 共享" k=warn w=1.1
+n smem 2.4 0 "shared / L1" "≤ 228 KB / SM" k=teal w=1.1
+n reg 3.6 0 "寄存器" "256 KB / SM · 最快" k=pass w=1.1
+e hbm -> l2 "合并访存" k=todo anim
+e l2 -> smem "tile 搬运" k=warn anim
+e smem -> reg "复用多次" k=pass anim
+cap: 每往右一级，容量小一两个数量级、速度快一个数量级。几乎所有优化都在做一件事：让一个从 HBM 读来的数，在更近的地方被用尽可能多次。
+:::
+::: callout analogy 厨房的三层储物
+HBM 是街对面的仓库（大、远），L2 是楼下储藏室，shared memory 是灶台旁的料理台，寄存器是你手里正拿着的东西。
+好厨师不会每切一刀菜就跑一趟仓库：一次把一筐菜搬到料理台（tiling），在台上反复取用（复用）。kernel 优化说到底就是“少跑仓库”。
+:::
+::: callout analogy warp 是一支龙舟队
+32 名桨手听同一个鼓点划桨（SIMT：同一条指令）。如果一半人要左转、一半人要右转（分支发散），只能先让左边那半划、右边那半等，再反过来，速度减半。
+某支队在等补给（访存）时，调度器马上换另一支队上场：这就是为什么 SM 上要同时驻留足够多的 warp（occupancy）。
+:::
+::: callout analogy roofline 是工厂的两个上限
+工厂产量受两件事限制：原料运进来的速度（带宽）和机器加工的速度（算力）。每吨原料需要的加工量就是算术强度：
+加工量少（elementwise、decode）时，机器总在等原料：memory-bound；加工量大（大 GEMM、prefill）时，原料堆在门口等机器：compute-bound。先判断卡在哪边，再决定是修路还是买机器。
+:::
+
 ## 源码与资料
 
 **文档**：[CUDA C++ Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html) · [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html) · [How to Access Global Memory Efficiently](https://developer.nvidia.com/blog/how-access-global-memory-efficiently-cuda-c-kernels/) · [Using Shared Memory in CUDA C/C++](https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/) · [Roofline model](https://en.wikipedia.org/wiki/Roofline_model)
