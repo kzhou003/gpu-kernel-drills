@@ -73,7 +73,9 @@ def resolve(alias, path, symbol):
     if path not in tree(alias):
         return None, f"{alias}: no file {path}"
     url = f"https://github.com/{repo}/blob/{sha}/{path}"
-    if symbol:
+    if symbol and re.fullmatch(r"L\d+(-L\d+)?", symbol):   # explicit line(s): @L123 or @L10-L20
+        url += f"#{symbol}"
+    elif symbol:
         f = cached(alias, path)
         if not f.exists():
             return None, f"{alias}:{path} not fetched (run: python3 build/sources.py fetch)"

@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F4 讲解：不排序的 top-k / top-p</title>
+<meta name="description" content="采样前的 top-k / top-p 截断，教科书做法是排序加累积和；FlashInfer 从不排序，而是二分查找一个阈值。这一页先把“找阈值”变成一个单调函数的二分问题，再讲参考解的关键技巧：非负浮点数的二进制位模式和数值同序，所以可以对 int32 做精确二分。最后对比 FlashInfer 的三分 pivot 为什么快了 10 倍。">
+<style>
+:root {
+  --bg: #f7f6f2; --surface: #ffffff; --surface-2: #f0eee8; --border: #dedad0;
+  --text: #22211e; --muted: #6b675e; --accent: #2f6fdb; --accent-soft: #e3ecfb;
+  --code-bg: #f6f4ef; --l1: #2e8b57; --l1-soft: #e4f3ea; --l2: #b7791f; --l2-soft: #fbf0dc;
+  --l3: #c0392b; --l3-soft: #fbe5e2; --ok: #2e8b57; --bad: #c0392b; --idea: #7a4fc4; --idea-soft: #efe8fb;
+  --tk-kw: #8a3ab9; --tk-str: #2f7d32; --tk-num: #b5541c; --tk-com: #8a867c; --tk-fn: #2457b8; --tk-type: #0f7b8a; --tk-meta: #b7791f;
+  --shadow: 0 1px 2px rgba(0,0,0,.05), 0 2px 8px rgba(0,0,0,.04); --radius: 10px;
+  --font: "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Code", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+  --sidebar: 268px; color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #17181b; --surface: #1f2125; --surface-2: #26282d; --border: #363a41; --text: #e6e4df; --muted: #a19d94;
+  --accent: #7aa7ff; --accent-soft: #23314d; --code-bg: #1b1d21; --l1: #5cc98b; --l1-soft: #1d3327; --l2: #e6b25c; --l2-soft: #3a2f1b;
+  --l3: #f08070; --l3-soft: #3d2320; --ok: #5cc98b; --bad: #f08070; --idea: #b79cf0; --idea-soft: #2c2440;
+  --tk-kw: #d19ef0; --tk-str: #8fd18f; --tk-num: #f0a35e; --tk-com: #7f7b73; --tk-fn: #8cb4ff; --tk-type: #5cc9d6; --tk-meta: #e6b25c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #17181b; --surface: #1f2125; --surface-2: #26282d; --border: #363a41; --text: #e6e4df; --muted: #a19d94;
+  --accent: #7aa7ff; --accent-soft: #23314d; --code-bg: #1b1d21; --l1: #5cc98b; --l1-soft: #1d3327; --l2: #e6b25c; --l2-soft: #3a2f1b;
+  --l3: #f08070; --l3-soft: #3d2320; --ok: #5cc98b; --bad: #f08070; --idea: #b79cf0; --idea-soft: #2c2440;
+  --tk-kw: #d19ef0; --tk-str: #8fd18f; --tk-num: #f0a35e; --tk-com: #7f7b73; --tk-fn: #8cb4ff; --tk-type: #5cc9d6; --tk-meta: #e6b25c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark; }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 60px; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15.5px/1.75 var(--font); overflow-x: hidden; }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+.btn { appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 8px;
+  padding: 3px 10px; font: inherit; font-size: 13px; cursor: pointer; line-height: 1.5; }
+.btn:hover { border-color: var(--accent); }
+
+/* top bar + sidebar */
+.topbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); font-size: 14px; }
+.topbar .home { font-weight: 700; color: var(--text); white-space: nowrap; }
+.topbar .spacer { flex: 1; }
+.topbar .prog-mini { color: var(--muted); font-size: 13px; white-space: nowrap; }
+#nav-btn { display: none; }
+.layout { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); }
+.sidebar { position: sticky; top: 49px; height: calc(100vh - 49px); height: calc(100dvh - 49px); overflow-y: auto;
+  border-right: 1px solid var(--border); padding: 14px 10px 40px 14px; font-size: 13.5px; scrollbar-width: thin; }
+.nav-group { margin: 14px 0 4px; font-size: 11.5px; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.nav-group:first-child { margin-top: 0; }
+.nav-tier { margin: 18px 0 2px; font-size: 11px; font-weight: 800; letter-spacing: .12em; color: var(--accent); text-transform: uppercase; }
+.nav-tier:first-child { margin-top: 0; }
+.tier-banner { margin: 72px 0 -40px; font: 800 13px var(--font); letter-spacing: .3em; color: var(--accent); }
+.nav-item { display: flex; align-items: baseline; gap: 6px; padding: 3px 8px; border-radius: 6px; color: var(--text); line-height: 1.45; }
+.nav-item:hover { background: var(--surface-2); text-decoration: none; }
+.nav-item.cur { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav-item .nid { font: 700 12px var(--mono); color: var(--accent); min-width: 22px; }
+.nav-item .nmin { margin-left: auto; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.nav-item.done .nid::after { content: " ✓"; color: var(--ok); }
+.nav-item.done { color: var(--muted); }
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  #nav-btn { display: inline-block; }
+  .sidebar { position: fixed; z-index: 40; top: 49px; left: 0; width: min(300px, 85vw); background: var(--bg);
+    transform: translateX(-102%); transition: transform .2s; box-shadow: var(--shadow); }
+  body.nav-open .sidebar { transform: none; }
+}
+
+/* page */
+.page { width: 100%; max-width: 940px; margin: 0 auto; padding: 24px 20px 120px; min-width: 0; }
+.hero { margin: 8px 0 28px; }
+.kicker { color: var(--muted); font-size: 13px; letter-spacing: .04em; }
+.hero h1 { font-size: 30px; line-height: 1.3; margin: 4px 0 10px; }
+.lede { color: var(--muted); margin: 4px 0 12px; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.badge { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 999px; padding: 1px 10px; font-size: 12.5px; color: var(--muted); }
+.badge b { color: var(--text); font-weight: 600; }
+.badge code { font-size: 11.5px; }
+.badge.diff-易 b { color: var(--ok); } .badge.diff-中 b { color: var(--l2); } .badge.diff-难 b { color: var(--bad); }
+.done-toggle { cursor: pointer; } .done-toggle input { margin: 0 4px 0 0; }
+.progress { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); margin-top: 10px; }
+.progress > div { height: 100%; background: var(--ok); width: 0; transition: width .3s; }
+
+section.part, section.drill { margin: 0 0 56px; scroll-margin-top: 60px; }
+section.drill { border-top: 3px solid var(--accent); padding-top: 18px; }
+section.part > h2, .drill-head h2 { font-size: 25px; line-height: 1.35; margin: 4px 0 6px; }
+.drill-head .did { font: 700 .85em var(--mono); color: #fff; background: var(--accent); border-radius: 6px; padding: 1px 8px; margin-right: 10px; vertical-align: 2px; }
+.track-banner { margin: 64px 0 28px; padding: 16px 18px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); scroll-margin-top: 60px; }
+.track-banner h2 { margin: 0; font-size: 22px; } .track-banner p { margin: 4px 0 0; color: var(--muted); }
+.mini-toc { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px; margin: 12px 0 18px; font-size: 13.5px; }
+.mini-toc ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 28px; }
+@media (max-width: 640px) { .mini-toc ol { columns: 1; } .page { padding: 16px 16px 96px; } .hero h1 { font-size: 24px; } }
+h3 { font-size: 19px; margin: 34px 0 10px; padding-top: 8px; border-top: 1px solid var(--border); scroll-margin-top: 60px; }
+h4 { font-size: 16px; margin: 20px 0 6px; }
+p, ul, ol { margin: 8px 0; } li { margin: 3px 0; }
+hr { border: 0; border-top: 1px dashed var(--border); margin: 20px 0; }
+blockquote { margin: 12px 0; padding: 6px 14px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+code { font-family: var(--mono); font-size: .86em; background: var(--code-bg); border: 1px solid var(--border); padding: 0 4px; border-radius: 4px; }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto;
+  font-size: 13px; line-height: 1.55; margin: 10px 0; tab-size: 4; }
+pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+:not(pre) > code { overflow-wrap: anywhere; }
+.codebox { margin: 12px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--code-bg); }
+.codebox pre { margin: 0; border: 0; border-radius: 0; max-height: 640px; }
+details.solution .codebox pre { max-height: none; }
+.code-head { display: flex; align-items: center; gap: 10px; padding: 5px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.code-head .path { font-family: var(--mono); font-weight: 600; } .code-head .btn { margin-left: auto; padding: 1px 8px; font-size: 12px; }
+.table-wrap { overflow-x: auto; margin: 10px 0; }
+table { border-collapse: collapse; font-size: 13.5px; min-width: 60%; background: var(--surface); }
+th, td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+th { background: var(--surface-2); font-weight: 600; }
+.callout { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 10px 14px; margin: 14px 0; box-shadow: var(--shadow); }
+.callout > .callout-title { font-weight: 700; margin-bottom: 2px; }
+.callout.info { border-left: 4px solid var(--accent); } .callout.warn { border-left: 4px solid var(--bad); }
+.callout.ok { border-left: 4px solid var(--ok); } .callout.idea { border-left: 4px solid var(--idea); }
+details.hint, details.solution { border: 1px solid var(--border); border-radius: var(--radius); margin: 12px 0; background: var(--surface); box-shadow: var(--shadow); }
+details.hint > summary, details.solution > summary { cursor: pointer; list-style: none; padding: 9px 14px; font-weight: 600;
+  display: flex; align-items: center; gap: 10px; border-radius: var(--radius); flex-wrap: wrap; }
+details > summary::-webkit-details-marker { display: none; }
+details.hint > summary::after, details.solution > summary::after { content: "展开 ▸"; margin-left: auto; font-size: 12px; color: var(--muted); font-weight: 400; }
+details[open].hint > summary::after, details[open].solution > summary::after { content: "收起 ▾"; }
+details[open].hint > summary, details[open].solution > summary { border-bottom: 1px solid var(--border); border-radius: var(--radius) var(--radius) 0 0; }
+details.hint > .body, details.solution > .body { padding: 6px 16px 14px; }
+.lvl { display: inline-block; border-radius: 6px; padding: 0 8px; font-size: 12px; font-weight: 700; color: #fff; }
+details.hint.l1 > summary { background: var(--l1-soft); } details.hint.l1 .lvl { background: var(--l1); }
+details.hint.l2 > summary { background: var(--l2-soft); } details.hint.l2 .lvl { background: var(--l2); }
+details.hint.l3 > summary { background: var(--l3-soft); } details.hint.l3 .lvl { background: var(--l3); }
+details.solution { border-color: var(--bad); } details.solution > summary { background: var(--l3-soft); } details.solution .lvl { background: var(--bad); }
+.spoiler-note { font-size: 12px; color: var(--muted); font-weight: 400; }
+details.answer { border: 1px dashed var(--border); border-radius: 8px; margin: 10px 0; background: var(--surface-2); }
+details.answer > summary { cursor: pointer; padding: 6px 12px; color: var(--accent); font-size: 14px; }
+details.answer > .body { padding: 2px 14px 10px; }
+a.src { display: inline-flex; align-items: baseline; gap: 4px; margin: 1px 0; padding: 0 7px; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--surface); font: 12.5px/1.7 var(--mono); color: var(--accent); white-space: nowrap; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; vertical-align: baseline; }
+a.src:hover { border-color: var(--accent); text-decoration: none; }
+a.src .src-repo { font-size: 10.5px; color: var(--muted); }
+a.src .src-repo::after { content: " ›"; }
+.muted { color: var(--muted); } .small { font-size: 13px; }
+.diagram { overflow-x: auto; margin: 12px 0; } .diagram svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.diagram svg text { fill: var(--text); font-family: var(--font); }
+
+/* syntax highlighting (highlight.js classes, colours follow the theme) */
+.hljs-keyword, .hljs-built_in, .hljs-literal { color: var(--tk-kw); }
+.hljs-string, .hljs-char, .hljs-regexp { color: var(--tk-str); }
+.hljs-number { color: var(--tk-num); }
+.hljs-comment, .hljs-quote { color: var(--tk-com); font-style: italic; }
+.hljs-title, .hljs-title.function_, .hljs-function .hljs-title { color: var(--tk-fn); }
+.hljs-type, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--tk-type); }
+.hljs-meta, .hljs-meta .hljs-keyword, .hljs-decorator { color: var(--tk-meta); }
+.hljs-attr, .hljs-variable, .hljs-params { color: inherit; }
+
+@media print {
+  .topbar, .sidebar { display: none !important; } .layout { display: block; }
+  details { break-inside: avoid; } .codebox pre { max-height: none; }
+}
+
+/* ---------- React-Flow-style diagrams ---------- */
+:root { --f-dot: #d9d5cb; --f-acc: #2f6fdb; --f-acc-bg: #e3ecfb; --f-warn: #b7791f; --f-warn-bg: #fbf0dc; --f-pass: #2e8b57; --f-pass-bg: #e4f3ea;
+  --f-vio: #7a4fc4; --f-vio-bg: #efe8fb; --f-teal: #0f7b8a; --f-teal-bg: #e0f2f4; --f-todo: #c0392b; --f-todo-bg: #fbe5e2; --f-hl: #ffb020; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --f-dot: #30333a; --f-acc: #7aa7ff; --f-acc-bg: #23314d; --f-warn: #e6b25c; --f-warn-bg: #3a2f1b;
+  --f-pass: #5cc98b; --f-pass-bg: #1d3327; --f-vio: #b79cf0; --f-vio-bg: #2c2440; --f-teal: #5cc9d6; --f-teal-bg: #163238; --f-todo: #f08070; --f-todo-bg: #3d2320; } }
+:root[data-theme="dark"] { --f-dot: #30333a; --f-acc: #7aa7ff; --f-acc-bg: #23314d; --f-warn: #e6b25c; --f-warn-bg: #3a2f1b;
+  --f-pass: #5cc98b; --f-pass-bg: #1d3327; --f-vio: #b79cf0; --f-vio-bg: #2c2440; --f-teal: #5cc9d6; --f-teal-bg: #163238; --f-todo: #f08070; --f-todo-bg: #3d2320; }
+figure.flow { margin: 16px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.flow-head { display: flex; align-items: baseline; gap: 10px; padding: 7px 12px; font-weight: 700; font-size: 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.flow-hint { margin-left: auto; font-weight: 400; font-size: 11.5px; color: var(--muted); }
+.flow-body { overflow-x: auto; }
+.flow-body svg { display: block; margin: 0 auto; max-width: 100%; height: auto; font-family: var(--font); }
+figure.flow figcaption { padding: 7px 12px 9px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+.f-bgdot { fill: var(--f-dot); }
+.f-node rect.f-box { fill: var(--surface); stroke: var(--border); stroke-width: 1.3; filter: drop-shadow(0 1px 1.5px rgba(10,20,40,.10)); transition: stroke-width .15s; }
+.f-node text.f-t { fill: var(--text); font-size: 13px; font-weight: 650; }
+.f-node text.f-s { fill: var(--muted); font-size: 11px; font-family: var(--mono); }
+.f-node .f-handle { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; }
+.f-node.k-acc rect.f-box { fill: var(--f-acc-bg); stroke: var(--f-acc); } .f-node.k-warn rect.f-box { fill: var(--f-warn-bg); stroke: var(--f-warn); }
+.f-node.k-pass rect.f-box { fill: var(--f-pass-bg); stroke: var(--f-pass); } .f-node.k-vio rect.f-box { fill: var(--f-vio-bg); stroke: var(--f-vio); }
+.f-node.k-teal rect.f-box { fill: var(--f-teal-bg); stroke: var(--f-teal); } .f-node.k-todo rect.f-box { fill: var(--f-todo-bg); stroke: var(--f-todo); }
+.f-node.k-dark rect.f-box { fill: var(--text); stroke: var(--text); } .f-node.k-dark text { fill: var(--bg) !important; }
+.f-node.k-ghost rect.f-box { fill: none; stroke-dasharray: 4 3; }
+.f-grp rect { fill: none; stroke: var(--border); stroke-width: 1.4; stroke-dasharray: 6 4; }
+.f-grp text { fill: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.f-grp.k-acc rect { fill: var(--f-acc-bg); fill-opacity: .35; stroke: var(--f-acc); } .f-grp.k-warn rect { fill: var(--f-warn-bg); fill-opacity: .45; stroke: var(--f-warn); }
+.f-grp.k-pass rect { fill: var(--f-pass-bg); fill-opacity: .45; stroke: var(--f-pass); } .f-grp.k-vio rect { fill: var(--f-vio-bg); fill-opacity: .45; stroke: var(--f-vio); }
+.f-grp.k-teal rect { fill: var(--f-teal-bg); fill-opacity: .45; stroke: var(--f-teal); } .f-grp.k-todo rect { fill: var(--f-todo-bg); fill-opacity: .45; stroke: var(--f-todo); }
+.f-e { fill: none; stroke: var(--muted); stroke-width: 1.6; transition: opacity .15s; }
+.f-e.k-acc { stroke: var(--f-acc); } .f-e.k-warn { stroke: var(--f-warn); } .f-e.k-pass { stroke: var(--f-pass); }
+.f-e.k-vio { stroke: var(--f-vio); } .f-e.k-teal { stroke: var(--f-teal); } .f-e.k-todo { stroke: var(--f-todo); }
+.f-ah { fill: var(--muted); } .f-ah.k-acc { fill: var(--f-acc); } .f-ah.k-warn { fill: var(--f-warn); } .f-ah.k-pass { fill: var(--f-pass); }
+.f-ah.k-vio { fill: var(--f-vio); } .f-ah.k-teal { fill: var(--f-teal); } .f-ah.k-todo { fill: var(--f-todo); }
+.f-e.dash { stroke-dasharray: 5 4; }
+.f-e.anim { stroke-dasharray: 6 4; animation: fdash .9s linear infinite; }
+@keyframes fdash { to { stroke-dashoffset: -20; } }
+@media (prefers-reduced-motion: reduce) { .f-e.anim { animation: none; } }
+.f-el rect { fill: var(--surface); stroke: var(--border); }
+.f-el text { fill: var(--text); font-size: 11px; font-family: var(--mono); }
+svg.f-on .f-e:not(.hl), svg.f-on .f-el:not(.hl), svg.f-on .f-ah:not(.hl) { opacity: .15; }
+svg.f-on .f-node:not(.hl) { opacity: .4; }
+svg .f-node.hl rect.f-box { stroke-width: 2.4; }
+.callout.analogy { border-left: 4px solid #d9822b; background: color-mix(in srgb, #d9822b 7%, var(--surface)); }
+.callout.analogy > .callout-title { color: #b8691c; }
+
+.page { max-width: 900px; }
+.qnav { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.qnav a { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 1px 10px; font-size: 13px; }
+.qnav a:hover { border-color: var(--accent); text-decoration: none; }
+.q { font-size: 13px; color: var(--muted); margin: -4px 0 10px; }
+.q b { color: var(--text); }
+/* element/thread cell strips */
+.cells { display: grid; gap: 3px; margin: 8px 0; }
+.cells > div { border: 1px solid var(--border); border-radius: 5px; padding: 2px 0; text-align: center; font: 11.5px/1.35 var(--mono); background: var(--surface); }
+.cells > div small { display: block; color: var(--muted); font-size: 10px; }
+.cells .lbl { border: 0; background: none; text-align: right; padding-right: 6px; color: var(--muted); font-family: var(--font); }
+.c0 { background: var(--f-acc-bg) !important; border-color: var(--f-acc) !important; }
+.c1 { background: var(--f-warn-bg) !important; border-color: var(--f-warn) !important; }
+.c2 { background: var(--f-pass-bg) !important; border-color: var(--f-pass) !important; }
+.c3 { background: var(--f-vio-bg) !important; border-color: var(--f-vio) !important; }
+.cx { background: repeating-linear-gradient(135deg, var(--surface), var(--surface) 4px, var(--surface-2) 4px, var(--surface-2) 8px) !important; color: var(--muted); border-style: dashed !important; }
+.strip-scroll { overflow-x: auto; }
+td:first-child code { white-space: nowrap; }
+.legend { font-size: 12.5px; color: var(--muted); margin: 2px 0 10px; }
+.legend span { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; margin: 0 3px 0 10px; border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="home" href="../index.html">Kernel Dev 训练营</a><a href="index.html">/ 提示与讲解</a>
+  <span class="spacer"></span>
+  <button type="button" class="btn" id="theme-btn" title="切换明暗">◐</button>
+</header>
+<main class="page" id="top">
+<section class="hero">
+  <div class="kicker">F4 提示与讲解 · Track F · FlashInfer · 对照 <code>solutions/f4_topk_topp_renorm.py</code> 逐行读</div>
+  <h1>F4 讲解：不排序的 top-k / top-p</h1>
+  <p class="lede">采样前的 top-k / top-p 截断，教科书做法是排序加累积和；FlashInfer 从不排序，而是二分查找一个阈值。这一页先把“找阈值”变成一个单调函数的二分问题，再讲参考解的关键技巧：非负浮点数的二进制位模式和数值同序，所以可以对 int32 做精确二分。最后对比 FlashInfer 的三分 pivot 为什么快了 10 倍。</p>
+  <nav class="qnav"><a href="#f4_topk_topp_renorm-1">① 先看全貌：采样流水线里的 renorm</a><a href="#f4_topk_topp_renorm-2">② 找阈值 = 对单调函数做二分</a><a href="#f4_topk_topp_renorm-3">③ 关键技巧：对浮点数的二进制位做二分</a><a href="#f4_topk_topp_renorm-4">④ kernel 逐段讲</a><a href="#f4_topk_topp_renorm-5">⑤ 为什么比 FlashInfer 慢 10 倍</a><a href="#f4_topk_topp_renorm-6">⑥ 边界情况：并列</a><a href="#f4_topk_topp_renorm-7">⑦ 对照真实实现</a><a href="#f4_topk_topp_renorm-8">⑧ 常见坑与自测</a><a href="#f4_topk_topp_renorm-9">源码与资料索引</a></nav>
+</section>
+
+<div class="callout info"><div class="callout-title">怎么读这一页</div><p>对照 <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/f4_topk_topp_renorm.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/f4_topk_topp_renorm.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>f4_topk_topp_renorm.py</a> 读。kernel 的结构是“一个 program 处理一行，对整行扫很多遍”，每一遍都是 C2、T2 里那种行内归约。</p>
+</div>
+<h3 id="f4_topk_topp_renorm-1">① 先看全貌：采样流水线里的 renorm</h3>
+<p>每个 decode step，每个请求都要从词表里采一个 token。V 是 15 万左右（Qwen 是 151936）。</p>
+
+<figure class="flow"><div class="flow-head">一次采样<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;一次采样&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;l&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;logits [B, V]&quot;, &quot;s&quot;: &quot;lm_head 的输出&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;p&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;softmax / temperature&quot;, &quot;s&quot;: &quot;probs [B, V]&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;r&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;top-k / top-p renorm&quot;, &quot;s&quot;: &quot;截断并重新归一化&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.1}, {&quot;id&quot;: &quot;s&quot;, &quot;c&quot;: 3.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;采样&quot;, &quot;s&quot;: &quot;按概率抽一个 token&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;l&quot;, &quot;b&quot;: &quot;p&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;p&quot;, &quot;b&quot;: &quot;r&quot;, &quot;t&quot;: &quot;本题&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;r&quot;, &quot;b&quot;: &quot;s&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 210.0, &quot;nw&quot;: 165.0}}"></div><figcaption>top-k：只保留概率最大的 k 个。top-p（nucleus）：从最大的开始往下取，直到累积概率达到 p 为止。截断之后除以保留部分的总和，让它重新加起来等于 1。</figcaption></figure>
+<p><strong>为什么不排序</strong>：题目页的实测，B = 64、V = 151936 时光是 <code>torch.sort</code> 就要 1020 us，和一整层 decode 的时间相当。而我们其实不需要知道完整的顺序，只需要知道<strong>一个阈值</strong>：比它大的保留，比它小的丢掉。</p>
+<p><strong>手算一个例子</strong>：probs = [0.05, 0.40, 0.10, 0.30, 0.15]。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th></th>
+<th>阈值 t</th>
+<th>保留</th>
+<th>renorm 之后</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>top-k，k = 2</td>
+<td>0.30</td>
+<td>0.40、0.30，和 = 0.70</td>
+<td>[0, 0.571, 0, 0.429, 0]</td>
+</tr>
+<tr>
+<td>top-p，p = 0.8</td>
+<td>0.15</td>
+<td>0.40、0.30、0.15，和 = 0.85</td>
+<td>[0, 0.471, 0, 0.353, 0.176]</td>
+</tr>
+</tbody>
+</table></div>
+<p>top-p 的阈值是 0.15：从大到小累积 0.40 → 0.70 → <strong>0.85</strong>，到 0.15 时第一次达到 0.8。</p>
+<h3 id="f4_topk_topp_renorm-2">② 找阈值 = 对单调函数做二分</h3>
+<p>定义两个函数：</p>
+<pre><code class="language-text">count(t) = 有多少个 x ≥ t          （top-k 用）
+mass(t)  = Σ_{x ≥ t} x             （top-p 用）
+</code></pre>
+<p>t 越大，满足 x ≥ t 的元素越少，两个函数都<strong>单调不增</strong>。我们要找的是：</p>
+<ul>
+<li>top-k：最大的 t，使得 count(t) ≥ k</li>
+<li>top-p：最大的 t，使得 mass(t) ≥ p</li>
+</ul>
+<p>单调函数上找“最后一个满足条件的点”，就是二分。维护 lo（满足条件）和 hi（不满足），每次取中点 mid，算一遍 count(mid) 或 mass(mid)，根据结果把 lo 或 hi 移到 mid。</p>
+<p>上面例子 top-k = 2 时，在数值上二分的前几步：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>步</th>
+<th>lo</th>
+<th>hi</th>
+<th>mid</th>
+<th>count(mid)</th>
+<th>≥ 2？</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>0</td>
+<td>0.40⁺</td>
+<td>0.20</td>
+<td>2（0.40、0.30）</td>
+<td>是 → lo = 0.20</td>
+</tr>
+<tr>
+<td>1</td>
+<td>0.20</td>
+<td>0.40⁺</td>
+<td>0.30</td>
+<td>2</td>
+<td>是 → lo = 0.30</td>
+</tr>
+<tr>
+<td>2</td>
+<td>0.30</td>
+<td>0.40⁺</td>
+<td>0.35</td>
+<td>1</td>
+<td>否 → hi = 0.35</td>
+</tr>
+<tr>
+<td>…</td>
+<td>0.30</td>
+<td>区间不断缩小</td>
+<td></td>
+<td></td>
+<td>lo 停在 0.30</td>
+</tr>
+</tbody>
+</table></div>
+<p>每一步都要扫一遍整行（V 个数），但不需要排序，也不需要额外的显存。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 划录取分数线</div><p>一所学校要招 k 个人（top-k），或者要招到总分达到某个量为止（top-p）。教务处不需要把所有考生按分数排一遍名，只需要试一条分数线：线上有多少人？多了就把线往上提，少了就往下降。每试一次都要过一遍所有考生的卷子（扫一遍 V），但过卷子只需要数人数或加总分，比排名次简单得多。试几十次就能把线卡得精确到“刚好是某个考生的分数”。</p>
+</div>
+<h3 id="f4_topk_topp_renorm-3">③ 关键技巧：对浮点数的二进制位做二分</h3>
+<p>在数值上二分有一个问题：要二分多少次才“够精确”？浮点数在 0 附近很密、在 1 附近很稀，固定次数的数值二分不一定能精确停在某个真实的概率值上。</p>
+<p>参考解的办法：<strong>对非负的 fp32，把它的 32 位当成 int32 来看，大小顺序和数值完全一致</strong>。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>float</th>
+<th>int32 位模式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>最小的正 subnormal（≈1.4e-45）</td>
+<td>1</td>
+</tr>
+<tr>
+<td>0.05</td>
+<td>1028443341</td>
+</tr>
+<tr>
+<td>0.15</td>
+<td>1041865114</td>
+</tr>
+<tr>
+<td>0.30</td>
+<td>1050253722</td>
+</tr>
+<tr>
+<td>0.40</td>
+<td>1053609165</td>
+</tr>
+<tr>
+<td>0.5</td>
+<td>1056964608</td>
+</tr>
+<tr>
+<td>1.0</td>
+<td>1065353216</td>
+</tr>
+</tbody>
+</table></div>
+<p>原因：IEEE 754 的 fp32 是“符号位 | 8 位指数 | 23 位尾数”。符号位为 0 时，指数在高位、尾数在低位，指数大的数一定更大，指数相同时尾数大的更大，这正好就是整数比较的规则。</p>
+<p>于是二分的对象变成了整数区间 <code>[0, bits(max) + 1)</code>，长度小于 2³¹，<strong>31 次二分一定把区间缩到 1</strong>，lo 精确等于某个真实概率值的位模式。</p>
+
+<figure class="flow"><div class="flow-head">31 轮之后<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;31 轮之后&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;i&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;整数区间 [lo, hi)&quot;, &quot;s&quot;: &quot;lo = 0，hi = bits(max) + 1&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.05}, {&quot;id&quot;: &quot;r&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;每轮：mid = (lo + hi) / 2&quot;, &quot;s&quot;: &quot;扫一遍 V，判断 x_bits ≥ mid&quot;, &quot;k&quot;: &quot;teal&quot;, &quot;w&quot;: 1.15}, {&quot;id&quot;: &quot;e&quot;, &quot;c&quot;: 2.25, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;hi − lo = 1&quot;, &quot;s&quot;: &quot;lo 就是阈值的位模式&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;i&quot;, &quot;b&quot;: &quot;r&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;r&quot;, &quot;b&quot;: &quot;e&quot;, &quot;t&quot;: &quot;31 轮&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 230.0, &quot;nw&quot;: 180.0}}"></div><figcaption>比较 <code>x.to(tl.int32, bitcast=True) &gt;= mid</code> 等价于 <code>x &gt;= 位模式为 mid 的那个 float</code>，但不需要把 mid 转回 float，也不会遇到浮点二分的精度问题。bitcast 是重新解释同一组 32 位，不是数值转换。</figcaption></figure>
+<h3 id="f4_topk_topp_renorm-4">④ kernel 逐段讲</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/f4_topk_topp_renorm.py#L19-L67" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/f4_topk_topp_renorm.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>_renorm_kernel（19–67 行）</a></p>
+<p>一个 program 处理一行，整个 kernel 对这一行扫 1 + 31 + 2 = <strong>34 遍</strong>：</p>
+<h3>第 1 遍：求最大值，确定 hi</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/f4_topk_topp_renorm.py#L26-L31" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/f4_topk_topp_renorm.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>26–31 行</a></p>
+<pre><code class="language-python">mx = tl.zeros([BLOCK], dtype=tl.float32)
+for start in range(0, V, BLOCK):
+    x = tl.load(base + start + offs, mask=start + offs &lt; V, other=0.0)
+    mx = tl.maximum(mx, x)
+lo = 0
+hi = tl.max(mx, axis=0).to(tl.int32, bitcast=True) + 1
+</code></pre>
+<p>V = 151936 放不进一个 block，所以用 <code>for start in range(0, V, BLOCK)</code> 分段扫，每段 4096 个。<code>mx</code> 是一个向量，每个位置记录“这个位置上见过的最大值”，扫完再 <code>tl.max</code> 归约成标量。后面的 count 和 mass 也是同样的“向量累加器 + 最后归约”模式。</p>
+<p>初始的不变式：f(lo = 0) 一定满足条件（所有元素都 ≥ 0），f(hi) 一定不满足（没有元素 ≥ max⁺）。</p>
+<h3>31 轮二分</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/f4_topk_topp_renorm.py#L39-L55" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/f4_topk_topp_renorm.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>39–55 行</a></p>
+<pre><code class="language-python">for _ in range(31):
+    mid = lo + (hi - lo) // 2
+    acc = tl.zeros([BLOCK], dtype=tl.float32)
+    for start in range(0, V, BLOCK):
+        x = tl.load(...)
+        above = x.to(tl.int32, bitcast=True) &gt;= mid
+        acc += above.to(tl.float32) if IS_TOP_K else tl.where(above, x, 0.0)
+    total = tl.sum(acc, axis=0)
+    ok = total &gt;= k   # 或 total &gt;= p
+    lo = tl.where(ok, mid, lo)
+    hi = tl.where(ok, hi, mid)
+</code></pre>
+<ul>
+<li><code>lo + (hi − lo) // 2</code> 而不是 <code>(lo + hi) // 2</code>：后者在 int32 里可能溢出。</li>
+<li><strong><code>IS_TOP_K</code> 是 constexpr</strong>：同一个 kernel 编译成两个版本，<code>if IS_TOP_K</code> 在编译期就决定了，没有运行时分支。</li>
+<li><code>lo</code>、<code>hi</code> 是标量，用 <code>tl.where</code> 更新，相当于标量的三元表达式。</li>
+<li>top-k 的 k 在 host 端转成了 float32（<a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/f4_topk_topp_renorm.py#L80" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/f4_topk_topp_renorm.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>80 行</a>），因为它要和 float 累加出来的计数比较。</li>
+</ul>
+<h3>最后 2 遍：求保留部分的和，再归一化写出</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/f4_topk_topp_renorm.py#L58-L67" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/f4_topk_topp_renorm.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>58–67 行</a>：保留 <code>x_bits ≥ lo</code> 的元素，先扫一遍求它们的和 denom，再扫一遍写出 <code>x / denom</code>（不保留的写 0）。</p>
+<h3 id="f4_topk_topp_renorm-5">⑤ 为什么比 FlashInfer 慢 10 倍</h3>
+<p>题目页的实测（V = 151936）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th></th>
+<th>B = 1</th>
+<th>B = 64</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>参考解 top-k</td>
+<td>268 us</td>
+<td>312 us</td>
+</tr>
+<tr>
+<td>FlashInfer top-k</td>
+<td>25 us</td>
+<td>88 us</td>
+</tr>
+<tr>
+<td>参考解 top-p</td>
+<td>268 us</td>
+<td>311 us</td>
+</tr>
+<tr>
+<td>FlashInfer top-p</td>
+<td>76 us</td>
+<td>164 us</td>
+</tr>
+</tbody>
+</table></div>
+<p>两个原因：</p>
+<p><strong>1. 扫的遍数。</strong> 参考解固定 34 遍。FlashInfer 的 top-p renorm（<a class="src" href="https://github.com/flashinfer-ai/flashinfer/blob/eabf03fe55e77e3305c503b5cbfa1e60450c4227/include/flashinfer/sampling.cuh#L1709" title="flashinfer-ai/flashinfer @ eabf03f · include/flashinfer/sampling.cuh" target="_blank" rel="noopener"><span class="src-repo">flashinfer</span>TopPRenormProbKernel</a>）每一遍同时试<strong>两个</strong> pivot（区间的 1/3 和 2/3 处，<a class="src" href="https://github.com/flashinfer-ai/flashinfer/blob/eabf03fe55e77e3305c503b5cbfa1e60450c4227/include/flashinfer/sampling.cuh#L1791-L1792" title="flashinfer-ai/flashinfer @ eabf03f · include/flashinfer/sampling.cuh" target="_blank" rel="noopener"><span class="src-repo">flashinfer</span>pivot_0、pivot_1</a>），一遍就把区间缩到原来的 1/3。更重要的是它顺带记录 <code>min_gt_low</code>（大于 low 的最小真实概率）和 <code>max_le_high</code>（不超过 high 的最大真实概率），当两者相等时说明区间里已经只剩一个真实存在的值，立刻停止（<a class="src" href="https://github.com/flashinfer-ai/flashinfer/blob/eabf03fe55e77e3305c503b5cbfa1e60450c4227/include/flashinfer/sampling.cuh#L1781-L1787" title="flashinfer-ai/flashinfer @ eabf03f · include/flashinfer/sampling.cuh" target="_blank" rel="noopener"><span class="src-repo">flashinfer</span>循环不变式和停止条件</a>）。真实的概率分布里，这通常几遍就收敛了。</p>
+<p><strong>2. 一行只用一个 program。</strong> B = 1 时整个 GPU 只有 1 个 program 在工作。每一遍扫 608 KB（151936 × 4 字节），数据基本在 L2 里，但 1 个 SM 的带宽有限。题目页提到，只把 BLOCK 从 1024 调到 4096、num_warps 从 4 调到 16，就快了 3.3 倍：一个 program 里的线程越多，扫一遍越快。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 猜数字</div><p>二分查找像“猜一个 1 到 2³¹ 之间的数，每次只告诉你大了还是小了”：最多要猜 31 次。FlashInfer 的做法像是每次报两个数，还能顺便知道“区间里实际有哪些候选数”。如果对方告诉你“1000 到 2000 之间其实只有 1500 这一个数”，你立刻就知道答案，不用再一次次对半猜下去。</p>
+</div>
+<h3 id="f4_topk_topp_renorm-6">⑥ 边界情况：并列</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/f4_topk_topp_renorm.py#L6" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/f4_topk_topp_renorm.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>6 行</a>注释说“对没有并列值的行”语义和 FlashInfer 相同。如果第 k 大和第 k+1 大的概率完全相等，阈值落在这个值上，<code>x ≥ t</code> 会把两个都保留下来，top-k 实际保留了 k + 1 个。排序的做法可以按下标打破并列，阈值法做不到。测试用的是随机概率，几乎不会出现完全相等的值。</p>
+<h3 id="f4_topk_topp_renorm-7">⑦ 对照真实实现</h3>
+<ul>
+<li>Python 接口：<a class="src" href="https://github.com/flashinfer-ai/flashinfer/blob/eabf03fe55e77e3305c503b5cbfa1e60450c4227/flashinfer/sampling.py#L2172" title="flashinfer-ai/flashinfer @ eabf03f · flashinfer/sampling.py" target="_blank" rel="noopener"><span class="src-repo">flashinfer</span>top_k_renorm_probs</a> · <a class="src" href="https://github.com/flashinfer-ai/flashinfer/blob/eabf03fe55e77e3305c503b5cbfa1e60450c4227/flashinfer/sampling.py#L2083" title="flashinfer-ai/flashinfer @ eabf03f · flashinfer/sampling.py" target="_blank" rel="noopener"><span class="src-repo">flashinfer</span>top_p_renorm_probs</a> · 一步完成截断和采样的 <a class="src" href="https://github.com/flashinfer-ai/flashinfer/blob/eabf03fe55e77e3305c503b5cbfa1e60450c4227/flashinfer/sampling.py#L1903" title="flashinfer-ai/flashinfer @ eabf03f · flashinfer/sampling.py" target="_blank" rel="noopener"><span class="src-repo">flashinfer</span>top_k_top_p_sampling_from_probs</a></li>
+<li>CUDA：<a class="src" href="https://github.com/flashinfer-ai/flashinfer/blob/eabf03fe55e77e3305c503b5cbfa1e60450c4227/include/flashinfer/sampling.cuh#L1709" title="flashinfer-ai/flashinfer @ eabf03f · include/flashinfer/sampling.cuh" target="_blank" rel="noopener"><span class="src-repo">flashinfer</span>TopPRenormProbKernel</a>；采样 kernel <a class="src" href="https://github.com/flashinfer-ai/flashinfer/blob/eabf03fe55e77e3305c503b5cbfa1e60450c4227/include/flashinfer/sampling.cuh#L869" title="flashinfer-ai/flashinfer @ eabf03f · include/flashinfer/sampling.cuh" target="_blank" rel="noopener"><span class="src-repo">flashinfer</span>TopKSamplingFromProbKernel</a>、<a class="src" href="https://github.com/flashinfer-ai/flashinfer/blob/eabf03fe55e77e3305c503b5cbfa1e60450c4227/include/flashinfer/sampling.cuh#L1230" title="flashinfer-ai/flashinfer @ eabf03f · include/flashinfer/sampling.cuh" target="_blank" rel="noopener"><span class="src-repo">flashinfer</span>TopKTopPSamplingFromProbKernel</a>；每一遍归约的是 <a class="src" href="https://github.com/flashinfer-ai/flashinfer/blob/eabf03fe55e77e3305c503b5cbfa1e60450c4227/include/flashinfer/sampling.cuh#L117" title="flashinfer-ai/flashinfer @ eabf03f · include/flashinfer/sampling.cuh" target="_blank" rel="noopener"><span class="src-repo">flashinfer</span>ValueCount</a>（质量和个数一起归约）</li>
+<li>讲解文章：<a href="https://flashinfer.ai/2025/03/10/sampling.html">Sorting-Free GPU Kernels for LLM Sampling（FlashInfer blog）</a></li>
+<li>浮点位模式：<a href="https://en.wikipedia.org/wiki/Single-precision_floating-point_format">IEEE 754 单精度格式</a></li>
+</ul>
+<h3 id="f4_topk_topp_renorm-8">⑧ 常见坑与自测</h3>
+<ul>
+<li><strong>对负数用位模式比较</strong>：负数的 int32 位模式顺序是反的。这里的输入是概率，都 ≥ 0，所以没问题；如果对 logits 做同样的事就要先处理符号位。</li>
+<li><strong><code>(lo + hi) // 2</code> 溢出</strong>：hi 接近 2³¹ 时相加溢出成负数。</li>
+<li><strong>mass 用 fp16 累加</strong>：15 万个数加起来误差很大，top-p 的阈值会偏。</li>
+<li><strong>二分次数不够</strong>：少于 31 次时区间没缩到 1，阈值不精确，保留的个数可能多一两个。</li>
+</ul>
+
+<details class="answer"><summary>自测 1：probs = [0.5, 0.2, 0.2, 0.1]，top-k = 2，结果是什么？</summary><div class="body"><p>阈值落在 0.2 上（count(0.2) = 3 ≥ 2，count(0.2⁺) = 1 &lt; 2），x ≥ 0.2 保留了 3 个：0.5、0.2、0.2，和 = 0.9，结果 [0.556, 0.222, 0.222, 0]。这就是第 ⑥ 节说的并列情况，保留了 k + 1 个。</p>
+</div></details>
+
+<details class="answer"><summary>自测 2：V = 151936，参考解处理一行一共要读多少字节？</summary><div class="body"><p>34 遍 × 151936 × 4 字节 ≈ 20.7 MB。而这一行本身只有 608 KB：每一遍都在重复读同一份数据。FlashInfer 遍数少，而且能把一行缓存在片上，所以快得多。</p>
+</div></details>
+<h3 id="f4_topk_topp_renorm-9">源码与资料索引</h3>
+<p><strong>本仓库</strong>：<a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/f4_topk_topp_renorm.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/f4_topk_topp_renorm.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>solutions/f4_topk_topp_renorm.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/mine/f4_topk_topp_renorm.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · mine/f4_topk_topp_renorm.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>mine/f4_topk_topp_renorm.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/tests/test_f4_topk_topp_renorm.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · tests/test_f4_topk_topp_renorm.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>tests/test_f4_topk_topp_renorm.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/5d70840a62f8d16dda5af8a6b402b4b07c76c93f/content/f4.md" title="kzhou003/gpu-kernel-drills @ 5d70840 · content/f4.md" target="_blank" rel="noopener"><span class="src-repo">drills</span>content/f4.md</a></p>
+<p><strong>FlashInfer</strong>：<a class="src" href="https://github.com/flashinfer-ai/flashinfer/blob/eabf03fe55e77e3305c503b5cbfa1e60450c4227/flashinfer/sampling.py#L2172" title="flashinfer-ai/flashinfer @ eabf03f · flashinfer/sampling.py" target="_blank" rel="noopener"><span class="src-repo">flashinfer</span>sampling.py</a> · <a class="src" href="https://github.com/flashinfer-ai/flashinfer/blob/eabf03fe55e77e3305c503b5cbfa1e60450c4227/include/flashinfer/sampling.cuh#L1709" title="flashinfer-ai/flashinfer @ eabf03f · include/flashinfer/sampling.cuh" target="_blank" rel="noopener"><span class="src-repo">flashinfer</span>sampling.cuh · TopPRenormProbKernel</a> · <a href="https://flashinfer.ai/2025/03/10/sampling.html">Sorting-Free Sampling 博客</a></p>
+
+</main>
+<script>
+// ---------- React-Flow-style diagram renderer (pure SVG, works offline and in print) ----------
+(function () {
+  var NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, parent) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+  function txt(parent, x, y, s, cls, anchor) { var t = el("text", { x: x, y: y, "class": cls, "text-anchor": anchor || "middle" }, parent); t.textContent = s; return t; }
+  function render(host, spec) {
+    var cfg = spec.cfg || {}, CW = cfg.cw || 200, RH = cfg.rh || 88, NW = cfg.nw || 160, PAD = 26;
+    var N = {}, maxX = 0, maxY = 0;
+    spec.nodes.forEach(function (n) {
+      var w = NW * n.w, h = n.s ? 52 : 38, x = PAD + n.c * CW, y = PAD + 14 + n.r * RH;
+      N[n.id] = { n: n, x: x, y: y, w: w, h: h, cx: x + w / 2, cy: y + h / 2 };
+      maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+    });
+    var groups = (spec.groups || []).map(function (g) {
+      var x0 = PAD + g.c0 * CW - 14, y0 = PAD + 14 + g.r0 * RH - 28, x1 = PAD + g.c1 * CW + NW + 14, y1 = PAD + 14 + g.r1 * RH + 52 + 14;
+      maxX = Math.max(maxX, x1); maxY = Math.max(maxY, y1); return { g: g, x0: x0, y0: y0, x1: x1, y1: y1 };
+    });
+    var W = maxX + PAD, H = maxY + PAD;
+    var svg = el("svg", { viewBox: "0 0 " + W + " " + H, width: W, role: "img", "aria-label": spec.title });
+    var uid = "f" + Math.random().toString(36).slice(2, 8);
+    var defs = el("defs", {}, svg);
+    var pat = el("pattern", { id: uid + "dot", width: 16, height: 16, patternUnits: "userSpaceOnUse" }, defs);
+    el("circle", { cx: 1, cy: 1, r: 1, "class": "f-bgdot" }, pat);
+    var bg = el("rect", { x: 0, y: 0, width: W, height: H, fill: "url(#" + uid + "dot)" }, svg);
+    groups.forEach(function (G) {
+      var gg = el("g", { "class": "f-grp" + (G.g.k ? " k-" + G.g.k : "") }, svg);
+      el("rect", { x: G.x0, y: G.y0, width: G.x1 - G.x0, height: G.y1 - G.y0, rx: 10 }, gg);
+      txt(gg, G.x0 + 10, G.y0 + 15, G.g.t, "", "start");
+    });
+    var edgeLayer = el("g", {}, svg), nodeLayer = el("g", {}, svg), labelLayer = el("g", {}, svg);   // labels on top
+    function side(A, B) {
+      var dx = B.cx - A.cx, dy = B.cy - A.cy;
+      if (Math.abs(dx) >= Math.abs(dy) * 0.9) return dx >= 0 ? ["r", "l"] : ["l", "r"];
+      return dy >= 0 ? ["b", "t"] : ["t", "b"];
+    }
+    function port(P, s) { return s === "r" ? [P.x + P.w, P.cy] : s === "l" ? [P.x, P.cy] : s === "t" ? [P.cx, P.y] : [P.cx, P.y + P.h]; }
+    function dir(s) { return s === "r" ? [1, 0] : s === "l" ? [-1, 0] : s === "t" ? [0, -1] : [0, 1]; }
+    var nodeEdges = {};
+    spec.edges.forEach(function (e, i) {
+      var as = e.a.split(":"), bs = e.b.split(":"), A = N[as[0]], B = N[bs[0]];
+      var auto = side(A, B), sa = as[1] || auto[0], sb = bs[1] || auto[1];
+      var p0 = port(A, sa), p3 = port(B, sb), d0 = dir(sa), d3 = dir(sb);
+      var dist = Math.hypot(p3[0] - p0[0], p3[1] - p0[1]), off = Math.max(36, Math.min(140, dist * 0.45));
+      if (sa === sb) off = Math.max(off, 60);                     // U-shaped loop between two ports on the same side
+      var p1 = [p0[0] + d0[0] * off, p0[1] + d0[1] * off], p2 = [p3[0] + d3[0] * (off + 6), p3[1] + d3[1] * (off + 6)];
+      var end = [p3[0] + d3[0] * 7, p3[1] + d3[1] * 7];             // stop before the arrowhead
+      var cls = "f-e" + (e.k ? " k-" + e.k : "") + (e.anim ? " anim" : "") + (e.dash ? " dash" : "");
+      var path = el("path", { d: "M" + p0 + " C" + p1 + " " + p2 + " " + end, "class": cls }, edgeLayer);
+      var ah = el("path", { d: "M" + p3 + " l" + (-d3[0] * 8 + d3[1] * 4.5) + "," + (-d3[1] * 8 + d3[0] * 4.5) + " l" + (-d3[1] * 9) + "," + (d3[0] * 9) + " z",
+        "class": "f-ah" + (e.k ? " k-" + e.k : "") }, edgeLayer);
+      var items = [path, ah];
+      if (e.t) {
+        var t = 0.5, mx = Math.pow(1 - t, 3) * p0[0] + 3 * Math.pow(1 - t, 2) * t * p1[0] + 3 * (1 - t) * t * t * p2[0] + t * t * t * end[0];
+        var my = Math.pow(1 - t, 3) * p0[1] + 3 * Math.pow(1 - t, 2) * t * p1[1] + 3 * (1 - t) * t * t * p2[1] + t * t * t * end[1];
+        var lg = el("g", { "class": "f-el" }, labelLayer);
+        var tw = 12; for (var ci = 0; ci < e.t.length; ci++) tw += e.t.charCodeAt(ci) > 255 ? 11.5 : 6.6; tw = Math.max(24, tw);
+        // label wider than the gap it sits in: lift it above a horizontal edge / beside a vertical one
+        var horiz = (sa === "l" || sa === "r") && (sb === "l" || sb === "r");
+        var gap = horiz ? Math.abs(end[0] - p0[0]) : Math.abs(end[1] - p0[1]);
+        if (horiz && tw > gap - 6) my = Math.min(p0[1], end[1]) - 15;
+        else if (!horiz && sa !== sb && 20 > gap - 4) mx = Math.max(p0[0], end[0]) + tw / 2 + 8;
+        el("rect", { x: mx - tw / 2, y: my - 10, width: tw, height: 18, rx: 5 }, lg);
+        txt(lg, mx, my + 3.5, e.t, "");
+        items.push(lg);
+      }
+      [as[0], bs[0]].forEach(function (id) { (nodeEdges[id] = nodeEdges[id] || []).push({ items: items, other: id === as[0] ? bs[0] : as[0] }); });
+    });
+    var nodeEls = {};
+    spec.nodes.forEach(function (n) {
+      var P = N[n.id], g = el("g", { "class": "f-node" + (n.k ? " k-" + n.k : "") }, nodeLayer);
+      el("rect", { x: P.x, y: P.y, width: P.w, height: P.h, rx: 9, "class": "f-box" }, g);
+      txt(g, P.cx, P.y + (n.s ? 21 : 23.5), n.t, "f-t");
+      if (n.s) txt(g, P.cx, P.y + 39, n.s, "f-s");
+      [["l", P.x, P.cy], ["r", P.x + P.w, P.cy], ["t", P.cx, P.y], ["b", P.cx, P.y + P.h]].forEach(function (h) {
+        el("circle", { cx: h[1], cy: h[2], r: 2.6, "class": "f-handle" }, g);
+      });
+      nodeEls[n.id] = g;
+      g.addEventListener("mouseenter", function () {
+        svg.classList.add("f-on"); g.classList.add("hl");
+        (nodeEdges[n.id] || []).forEach(function (c) { c.items.forEach(function (x) { x.classList.add("hl"); }); nodeEls[c.other].classList.add("hl"); });
+      });
+      g.addEventListener("mouseleave", function () {
+        svg.classList.remove("f-on"); svg.querySelectorAll(".hl").forEach(function (x) { x.classList.remove("hl"); });
+      });
+    });
+    host.appendChild(svg);
+    // grow the canvas to whatever was actually drawn (loop edges swing outside the node grid)
+    try {
+      var bb = svg.getBBox(), x0 = Math.min(0, bb.x - 12), y0 = Math.min(0, bb.y - 12);
+      var x1 = Math.max(W, bb.x + bb.width + 12), y1 = Math.max(H, bb.y + bb.height + 12);
+      svg.setAttribute("viewBox", x0 + " " + y0 + " " + (x1 - x0) + " " + (y1 - y0));
+      svg.setAttribute("width", x1 - x0);
+      bg.setAttribute("x", x0); bg.setAttribute("y", y0); bg.setAttribute("width", x1 - x0); bg.setAttribute("height", y1 - y0);
+    } catch (err) {}
+  }
+  document.querySelectorAll(".flow-body[data-flow]").forEach(function (h) {
+    try { render(h, JSON.parse(h.getAttribute("data-flow"))); } catch (e) { h.textContent = "diagram error: " + e; }
+  });
+})();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+(function () {
+  var root = document.documentElement, KEY = "gkd-theme";
+  try { var t = localStorage.getItem(KEY); if (t) root.setAttribute("data-theme", t); } catch (e) {}
+  document.getElementById("theme-btn").addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") ? root.getAttribute("data-theme") === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    var next = dark ? "light" : "dark"; root.setAttribute("data-theme", next);
+    try { localStorage.setItem(KEY, next); } catch (e) {}
+  });
+  document.querySelectorAll(".codebox .copy").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var code = b.closest(".codebox").querySelector("code").innerText;
+      (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject()).then(function () {
+        b.textContent = "已复制"; setTimeout(function () { b.textContent = "复制"; }, 1200);
+      }, function () { b.textContent = "复制失败"; });
+    });
+  });
+  if (window.hljs) document.querySelectorAll("pre code").forEach(function (el) {
+    if (!el.className) el.classList.add("language-plaintext");
+    try { hljs.highlightElement(el); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X1 讲解：MLX 的第一个自定义 Metal kernel</title>
+<meta name="description" content="用 mx.fast.metal_kernel 重写 C1 / T1 的 add + GELU。这一页把 MLX 实际生成的 Metal 源码贴出来（在本机用 verbose=True 抓的），逐行对照你写的函数体，讲清楚签名是怎么来的、模板参数 T 怎么变成 half、Metal 的 grid 为什么是“线程总数”而不是 block 数，以及 4 元素版本和 MLX 自己的 unary kernel 是什么关系。">
+<style>
+:root {
+  --bg: #f7f6f2; --surface: #ffffff; --surface-2: #f0eee8; --border: #dedad0;
+  --text: #22211e; --muted: #6b675e; --accent: #2f6fdb; --accent-soft: #e3ecfb;
+  --code-bg: #f6f4ef; --l1: #2e8b57; --l1-soft: #e4f3ea; --l2: #b7791f; --l2-soft: #fbf0dc;
+  --l3: #c0392b; --l3-soft: #fbe5e2; --ok: #2e8b57; --bad: #c0392b; --idea: #7a4fc4; --idea-soft: #efe8fb;
+  --tk-kw: #8a3ab9; --tk-str: #2f7d32; --tk-num: #b5541c; --tk-com: #8a867c; --tk-fn: #2457b8; --tk-type: #0f7b8a; --tk-meta: #b7791f;
+  --shadow: 0 1px 2px rgba(0,0,0,.05), 0 2px 8px rgba(0,0,0,.04); --radius: 10px;
+  --font: "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Code", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+  --sidebar: 268px; color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #17181b; --surface: #1f2125; --surface-2: #26282d; --border: #363a41; --text: #e6e4df; --muted: #a19d94;
+  --accent: #7aa7ff; --accent-soft: #23314d; --code-bg: #1b1d21; --l1: #5cc98b; --l1-soft: #1d3327; --l2: #e6b25c; --l2-soft: #3a2f1b;
+  --l3: #f08070; --l3-soft: #3d2320; --ok: #5cc98b; --bad: #f08070; --idea: #b79cf0; --idea-soft: #2c2440;
+  --tk-kw: #d19ef0; --tk-str: #8fd18f; --tk-num: #f0a35e; --tk-com: #7f7b73; --tk-fn: #8cb4ff; --tk-type: #5cc9d6; --tk-meta: #e6b25c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #17181b; --surface: #1f2125; --surface-2: #26282d; --border: #363a41; --text: #e6e4df; --muted: #a19d94;
+  --accent: #7aa7ff; --accent-soft: #23314d; --code-bg: #1b1d21; --l1: #5cc98b; --l1-soft: #1d3327; --l2: #e6b25c; --l2-soft: #3a2f1b;
+  --l3: #f08070; --l3-soft: #3d2320; --ok: #5cc98b; --bad: #f08070; --idea: #b79cf0; --idea-soft: #2c2440;
+  --tk-kw: #d19ef0; --tk-str: #8fd18f; --tk-num: #f0a35e; --tk-com: #7f7b73; --tk-fn: #8cb4ff; --tk-type: #5cc9d6; --tk-meta: #e6b25c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark; }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 60px; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15.5px/1.75 var(--font); overflow-x: hidden; }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+.btn { appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 8px;
+  padding: 3px 10px; font: inherit; font-size: 13px; cursor: pointer; line-height: 1.5; }
+.btn:hover { border-color: var(--accent); }
+
+/* top bar + sidebar */
+.topbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); font-size: 14px; }
+.topbar .home { font-weight: 700; color: var(--text); white-space: nowrap; }
+.topbar .spacer { flex: 1; }
+.topbar .prog-mini { color: var(--muted); font-size: 13px; white-space: nowrap; }
+#nav-btn { display: none; }
+.layout { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); }
+.sidebar { position: sticky; top: 49px; height: calc(100vh - 49px); height: calc(100dvh - 49px); overflow-y: auto;
+  border-right: 1px solid var(--border); padding: 14px 10px 40px 14px; font-size: 13.5px; scrollbar-width: thin; }
+.nav-group { margin: 14px 0 4px; font-size: 11.5px; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.nav-group:first-child { margin-top: 0; }
+.nav-tier { margin: 18px 0 2px; font-size: 11px; font-weight: 800; letter-spacing: .12em; color: var(--accent); text-transform: uppercase; }
+.nav-tier:first-child { margin-top: 0; }
+.tier-banner { margin: 72px 0 -40px; font: 800 13px var(--font); letter-spacing: .3em; color: var(--accent); }
+.nav-item { display: flex; align-items: baseline; gap: 6px; padding: 3px 8px; border-radius: 6px; color: var(--text); line-height: 1.45; }
+.nav-item:hover { background: var(--surface-2); text-decoration: none; }
+.nav-item.cur { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav-item .nid { font: 700 12px var(--mono); color: var(--accent); min-width: 22px; }
+.nav-item .nmin { margin-left: auto; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.nav-item.done .nid::after { content: " ✓"; color: var(--ok); }
+.nav-item.done { color: var(--muted); }
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  #nav-btn { display: inline-block; }
+  .sidebar { position: fixed; z-index: 40; top: 49px; left: 0; width: min(300px, 85vw); background: var(--bg);
+    transform: translateX(-102%); transition: transform .2s; box-shadow: var(--shadow); }
+  body.nav-open .sidebar { transform: none; }
+}
+
+/* page */
+.page { width: 100%; max-width: 940px; margin: 0 auto; padding: 24px 20px 120px; min-width: 0; }
+.hero { margin: 8px 0 28px; }
+.kicker { color: var(--muted); font-size: 13px; letter-spacing: .04em; }
+.hero h1 { font-size: 30px; line-height: 1.3; margin: 4px 0 10px; }
+.lede { color: var(--muted); margin: 4px 0 12px; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.badge { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 999px; padding: 1px 10px; font-size: 12.5px; color: var(--muted); }
+.badge b { color: var(--text); font-weight: 600; }
+.badge code { font-size: 11.5px; }
+.badge.diff-易 b { color: var(--ok); } .badge.diff-中 b { color: var(--l2); } .badge.diff-难 b { color: var(--bad); }
+.done-toggle { cursor: pointer; } .done-toggle input { margin: 0 4px 0 0; }
+.progress { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); margin-top: 10px; }
+.progress > div { height: 100%; background: var(--ok); width: 0; transition: width .3s; }
+
+section.part, section.drill { margin: 0 0 56px; scroll-margin-top: 60px; }
+section.drill { border-top: 3px solid var(--accent); padding-top: 18px; }
+section.part > h2, .drill-head h2 { font-size: 25px; line-height: 1.35; margin: 4px 0 6px; }
+.drill-head .did { font: 700 .85em var(--mono); color: #fff; background: var(--accent); border-radius: 6px; padding: 1px 8px; margin-right: 10px; vertical-align: 2px; }
+.track-banner { margin: 64px 0 28px; padding: 16px 18px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); scroll-margin-top: 60px; }
+.track-banner h2 { margin: 0; font-size: 22px; } .track-banner p { margin: 4px 0 0; color: var(--muted); }
+.mini-toc { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px; margin: 12px 0 18px; font-size: 13.5px; }
+.mini-toc ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 28px; }
+@media (max-width: 640px) { .mini-toc ol { columns: 1; } .page { padding: 16px 16px 96px; } .hero h1 { font-size: 24px; } }
+h3 { font-size: 19px; margin: 34px 0 10px; padding-top: 8px; border-top: 1px solid var(--border); scroll-margin-top: 60px; }
+h4 { font-size: 16px; margin: 20px 0 6px; }
+p, ul, ol { margin: 8px 0; } li { margin: 3px 0; }
+hr { border: 0; border-top: 1px dashed var(--border); margin: 20px 0; }
+blockquote { margin: 12px 0; padding: 6px 14px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+code { font-family: var(--mono); font-size: .86em; background: var(--code-bg); border: 1px solid var(--border); padding: 0 4px; border-radius: 4px; }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto;
+  font-size: 13px; line-height: 1.55; margin: 10px 0; tab-size: 4; }
+pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+:not(pre) > code { overflow-wrap: anywhere; }
+.codebox { margin: 12px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--code-bg); }
+.codebox pre { margin: 0; border: 0; border-radius: 0; max-height: 640px; }
+details.solution .codebox pre { max-height: none; }
+.code-head { display: flex; align-items: center; gap: 10px; padding: 5px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.code-head .path { font-family: var(--mono); font-weight: 600; } .code-head .btn { margin-left: auto; padding: 1px 8px; font-size: 12px; }
+.table-wrap { overflow-x: auto; margin: 10px 0; }
+table { border-collapse: collapse; font-size: 13.5px; min-width: 60%; background: var(--surface); }
+th, td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+th { background: var(--surface-2); font-weight: 600; }
+.callout { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 10px 14px; margin: 14px 0; box-shadow: var(--shadow); }
+.callout > .callout-title { font-weight: 700; margin-bottom: 2px; }
+.callout.info { border-left: 4px solid var(--accent); } .callout.warn { border-left: 4px solid var(--bad); }
+.callout.ok { border-left: 4px solid var(--ok); } .callout.idea { border-left: 4px solid var(--idea); }
+details.hint, details.solution { border: 1px solid var(--border); border-radius: var(--radius); margin: 12px 0; background: var(--surface); box-shadow: var(--shadow); }
+details.hint > summary, details.solution > summary { cursor: pointer; list-style: none; padding: 9px 14px; font-weight: 600;
+  display: flex; align-items: center; gap: 10px; border-radius: var(--radius); flex-wrap: wrap; }
+details > summary::-webkit-details-marker { display: none; }
+details.hint > summary::after, details.solution > summary::after { content: "展开 ▸"; margin-left: auto; font-size: 12px; color: var(--muted); font-weight: 400; }
+details[open].hint > summary::after, details[open].solution > summary::after { content: "收起 ▾"; }
+details[open].hint > summary, details[open].solution > summary { border-bottom: 1px solid var(--border); border-radius: var(--radius) var(--radius) 0 0; }
+details.hint > .body, details.solution > .body { padding: 6px 16px 14px; }
+.lvl { display: inline-block; border-radius: 6px; padding: 0 8px; font-size: 12px; font-weight: 700; color: #fff; }
+details.hint.l1 > summary { background: var(--l1-soft); } details.hint.l1 .lvl { background: var(--l1); }
+details.hint.l2 > summary { background: var(--l2-soft); } details.hint.l2 .lvl { background: var(--l2); }
+details.hint.l3 > summary { background: var(--l3-soft); } details.hint.l3 .lvl { background: var(--l3); }
+details.solution { border-color: var(--bad); } details.solution > summary { background: var(--l3-soft); } details.solution .lvl { background: var(--bad); }
+.spoiler-note { font-size: 12px; color: var(--muted); font-weight: 400; }
+details.answer { border: 1px dashed var(--border); border-radius: 8px; margin: 10px 0; background: var(--surface-2); }
+details.answer > summary { cursor: pointer; padding: 6px 12px; color: var(--accent); font-size: 14px; }
+details.answer > .body { padding: 2px 14px 10px; }
+a.src { display: inline-flex; align-items: baseline; gap: 4px; margin: 1px 0; padding: 0 7px; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--surface); font: 12.5px/1.7 var(--mono); color: var(--accent); white-space: nowrap; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; vertical-align: baseline; }
+a.src:hover { border-color: var(--accent); text-decoration: none; }
+a.src .src-repo { font-size: 10.5px; color: var(--muted); }
+a.src .src-repo::after { content: " ›"; }
+.muted { color: var(--muted); } .small { font-size: 13px; }
+.diagram { overflow-x: auto; margin: 12px 0; } .diagram svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.diagram svg text { fill: var(--text); font-family: var(--font); }
+
+/* syntax highlighting (highlight.js classes, colours follow the theme) */
+.hljs-keyword, .hljs-built_in, .hljs-literal { color: var(--tk-kw); }
+.hljs-string, .hljs-char, .hljs-regexp { color: var(--tk-str); }
+.hljs-number { color: var(--tk-num); }
+.hljs-comment, .hljs-quote { color: var(--tk-com); font-style: italic; }
+.hljs-title, .hljs-title.function_, .hljs-function .hljs-title { color: var(--tk-fn); }
+.hljs-type, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--tk-type); }
+.hljs-meta, .hljs-meta .hljs-keyword, .hljs-decorator { color: var(--tk-meta); }
+.hljs-attr, .hljs-variable, .hljs-params { color: inherit; }
+
+@media print {
+  .topbar, .sidebar { display: none !important; } .layout { display: block; }
+  details { break-inside: avoid; } .codebox pre { max-height: none; }
+}
+
+/* ---------- React-Flow-style diagrams ---------- */
+:root { --f-dot: #d9d5cb; --f-acc: #2f6fdb; --f-acc-bg: #e3ecfb; --f-warn: #b7791f; --f-warn-bg: #fbf0dc; --f-pass: #2e8b57; --f-pass-bg: #e4f3ea;
+  --f-vio: #7a4fc4; --f-vio-bg: #efe8fb; --f-teal: #0f7b8a; --f-teal-bg: #e0f2f4; --f-todo: #c0392b; --f-todo-bg: #fbe5e2; --f-hl: #ffb020; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --f-dot: #30333a; --f-acc: #7aa7ff; --f-acc-bg: #23314d; --f-warn: #e6b25c; --f-warn-bg: #3a2f1b;
+  --f-pass: #5cc98b; --f-pass-bg: #1d3327; --f-vio: #b79cf0; --f-vio-bg: #2c2440; --f-teal: #5cc9d6; --f-teal-bg: #163238; --f-todo: #f08070; --f-todo-bg: #3d2320; } }
+:root[data-theme="dark"] { --f-dot: #30333a; --f-acc: #7aa7ff; --f-acc-bg: #23314d; --f-warn: #e6b25c; --f-warn-bg: #3a2f1b;
+  --f-pass: #5cc98b; --f-pass-bg: #1d3327; --f-vio: #b79cf0; --f-vio-bg: #2c2440; --f-teal: #5cc9d6; --f-teal-bg: #163238; --f-todo: #f08070; --f-todo-bg: #3d2320; }
+figure.flow { margin: 16px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.flow-head { display: flex; align-items: baseline; gap: 10px; padding: 7px 12px; font-weight: 700; font-size: 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.flow-hint { margin-left: auto; font-weight: 400; font-size: 11.5px; color: var(--muted); }
+.flow-body { overflow-x: auto; }
+.flow-body svg { display: block; margin: 0 auto; max-width: 100%; height: auto; font-family: var(--font); }
+figure.flow figcaption { padding: 7px 12px 9px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+.f-bgdot { fill: var(--f-dot); }
+.f-node rect.f-box { fill: var(--surface); stroke: var(--border); stroke-width: 1.3; filter: drop-shadow(0 1px 1.5px rgba(10,20,40,.10)); transition: stroke-width .15s; }
+.f-node text.f-t { fill: var(--text); font-size: 13px; font-weight: 650; }
+.f-node text.f-s { fill: var(--muted); font-size: 11px; font-family: var(--mono); }
+.f-node .f-handle { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; }
+.f-node.k-acc rect.f-box { fill: var(--f-acc-bg); stroke: var(--f-acc); } .f-node.k-warn rect.f-box { fill: var(--f-warn-bg); stroke: var(--f-warn); }
+.f-node.k-pass rect.f-box { fill: var(--f-pass-bg); stroke: var(--f-pass); } .f-node.k-vio rect.f-box { fill: var(--f-vio-bg); stroke: var(--f-vio); }
+.f-node.k-teal rect.f-box { fill: var(--f-teal-bg); stroke: var(--f-teal); } .f-node.k-todo rect.f-box { fill: var(--f-todo-bg); stroke: var(--f-todo); }
+.f-node.k-dark rect.f-box { fill: var(--text); stroke: var(--text); } .f-node.k-dark text { fill: var(--bg) !important; }
+.f-node.k-ghost rect.f-box { fill: none; stroke-dasharray: 4 3; }
+.f-grp rect { fill: none; stroke: var(--border); stroke-width: 1.4; stroke-dasharray: 6 4; }
+.f-grp text { fill: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.f-grp.k-acc rect { fill: var(--f-acc-bg); fill-opacity: .35; stroke: var(--f-acc); } .f-grp.k-warn rect { fill: var(--f-warn-bg); fill-opacity: .45; stroke: var(--f-warn); }
+.f-grp.k-pass rect { fill: var(--f-pass-bg); fill-opacity: .45; stroke: var(--f-pass); } .f-grp.k-vio rect { fill: var(--f-vio-bg); fill-opacity: .45; stroke: var(--f-vio); }
+.f-grp.k-teal rect { fill: var(--f-teal-bg); fill-opacity: .45; stroke: var(--f-teal); } .f-grp.k-todo rect { fill: var(--f-todo-bg); fill-opacity: .45; stroke: var(--f-todo); }
+.f-e { fill: none; stroke: var(--muted); stroke-width: 1.6; transition: opacity .15s; }
+.f-e.k-acc { stroke: var(--f-acc); } .f-e.k-warn { stroke: var(--f-warn); } .f-e.k-pass { stroke: var(--f-pass); }
+.f-e.k-vio { stroke: var(--f-vio); } .f-e.k-teal { stroke: var(--f-teal); } .f-e.k-todo { stroke: var(--f-todo); }
+.f-ah { fill: var(--muted); } .f-ah.k-acc { fill: var(--f-acc); } .f-ah.k-warn { fill: var(--f-warn); } .f-ah.k-pass { fill: var(--f-pass); }
+.f-ah.k-vio { fill: var(--f-vio); } .f-ah.k-teal { fill: var(--f-teal); } .f-ah.k-todo { fill: var(--f-todo); }
+.f-e.dash { stroke-dasharray: 5 4; }
+.f-e.anim { stroke-dasharray: 6 4; animation: fdash .9s linear infinite; }
+@keyframes fdash { to { stroke-dashoffset: -20; } }
+@media (prefers-reduced-motion: reduce) { .f-e.anim { animation: none; } }
+.f-el rect { fill: var(--surface); stroke: var(--border); }
+.f-el text { fill: var(--text); font-size: 11px; font-family: var(--mono); }
+svg.f-on .f-e:not(.hl), svg.f-on .f-el:not(.hl), svg.f-on .f-ah:not(.hl) { opacity: .15; }
+svg.f-on .f-node:not(.hl) { opacity: .4; }
+svg .f-node.hl rect.f-box { stroke-width: 2.4; }
+.callout.analogy { border-left: 4px solid #d9822b; background: color-mix(in srgb, #d9822b 7%, var(--surface)); }
+.callout.analogy > .callout-title { color: #b8691c; }
+
+.page { max-width: 900px; }
+.qnav { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.qnav a { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 1px 10px; font-size: 13px; }
+.qnav a:hover { border-color: var(--accent); text-decoration: none; }
+.q { font-size: 13px; color: var(--muted); margin: -4px 0 10px; }
+.q b { color: var(--text); }
+/* element/thread cell strips */
+.cells { display: grid; gap: 3px; margin: 8px 0; }
+.cells > div { border: 1px solid var(--border); border-radius: 5px; padding: 2px 0; text-align: center; font: 11.5px/1.35 var(--mono); background: var(--surface); }
+.cells > div small { display: block; color: var(--muted); font-size: 10px; }
+.cells .lbl { border: 0; background: none; text-align: right; padding-right: 6px; color: var(--muted); font-family: var(--font); }
+.c0 { background: var(--f-acc-bg) !important; border-color: var(--f-acc) !important; }
+.c1 { background: var(--f-warn-bg) !important; border-color: var(--f-warn) !important; }
+.c2 { background: var(--f-pass-bg) !important; border-color: var(--f-pass) !important; }
+.c3 { background: var(--f-vio-bg) !important; border-color: var(--f-vio) !important; }
+.cx { background: repeating-linear-gradient(135deg, var(--surface), var(--surface) 4px, var(--surface-2) 4px, var(--surface-2) 8px) !important; color: var(--muted); border-style: dashed !important; }
+.strip-scroll { overflow-x: auto; }
+td:first-child code { white-space: nowrap; }
+.legend { font-size: 12.5px; color: var(--muted); margin: 2px 0 10px; }
+.legend span { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; margin: 0 3px 0 10px; border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="home" href="../index.html">Kernel Dev 训练营</a><a href="index.html">/ 提示与讲解</a>
+  <span class="spacer"></span>
+  <button type="button" class="btn" id="theme-btn" title="切换明暗">◐</button>
+</header>
+<main class="page" id="top">
+<section class="hero">
+  <div class="kicker">X1 提示与讲解 · Track X · MLX / Metal · 对照 <code>solutions/x1_metal_elementwise.py</code> 逐行读</div>
+  <h1>X1 讲解：MLX 的第一个自定义 Metal kernel</h1>
+  <p class="lede">用 mx.fast.metal_kernel 重写 C1 / T1 的 add + GELU。这一页把 MLX 实际生成的 Metal 源码贴出来（在本机用 verbose=True 抓的），逐行对照你写的函数体，讲清楚签名是怎么来的、模板参数 T 怎么变成 half、Metal 的 grid 为什么是“线程总数”而不是 block 数，以及 4 元素版本和 MLX 自己的 unary kernel 是什么关系。</p>
+  <nav class="qnav"><a href="#x1_metal_elementwise-1">① 先看全貌：你写函数体，MLX 写其余部分</a><a href="#x1_metal_elementwise-2">② CUDA ↔ Metal 对照</a><a href="#x1_metal_elementwise-3">③ grid 的语义：线程总数，不是 block 数</a><a href="#x1_metal_elementwise-4">④ 函数体：模板、fp32 计算、header</a><a href="#x1_metal_elementwise-5">⑤ 4 元素版本</a><a href="#x1_metal_elementwise-6">⑥ 常见坑与自测</a><a href="#x1_metal_elementwise-7">源码与资料索引</a></nav>
+</section>
+
+<div class="callout info"><div class="callout-title">怎么读这一页</div><p>对照 <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x1_metal_elementwise.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x1_metal_elementwise.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>x1_metal_elementwise.py</a> 读。如果你做过 C1 和 T1，这一题的 kernel 本身没有新东西，新的是 MLX 的“只写函数体”这种接口，以及 Metal 和 CUDA 在 launch 语义上的差别。</p>
+</div>
+<h3 id="x1_metal_elementwise-1">① 先看全貌：你写函数体，MLX 写其余部分</h3>
+
+<figure class="flow"><div class="flow-head">一次 metal_kernel 调用<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;一次 metal_kernel 调用&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;src&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;source + header&quot;, &quot;s&quot;: &quot;你写的函数体&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;mk&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;mx.fast.metal_kernel&quot;, &quot;s&quot;: &quot;input_names、output_names&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.05}, {&quot;id&quot;: &quot;sig&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;生成完整的 Metal 源码&quot;, &quot;s&quot;: &quot;签名 + 模板实例化&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.05}, {&quot;id&quot;: &quot;run&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;调用时&quot;, &quot;s&quot;: &quot;template、grid、threadgroup&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.1}, {&quot;id&quot;: &quot;disp&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;dispatchThreads&quot;, &quot;s&quot;: &quot;grid = 线程总数&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;src&quot;, &quot;b&quot;: &quot;mk&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;mk&quot;, &quot;b&quot;: &quot;sig&quot;, &quot;t&quot;: &quot;首次调用&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;sig&quot;, &quot;b&quot;: &quot;run&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;run&quot;, &quot;b&quot;: &quot;disp&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 260.0, &quot;nw&quot;: 170.0}}"></div><figcaption>kernel 在第一次以某组模板参数调用时编译，之后缓存。和 T1 的 @triton.jit 一样是 JIT，和 C1 的 load_inline 也类似，只是这里连函数签名都不用写。</figcaption></figure>
+<p>在本机（MLX 0.32.4）用 <code>verbose=True</code> 调用 fp16 版本，MLX 打印出的完整源码是：</p>
+<pre><code class="language-cpp">inline float gelu_tanh(float z) {                       // ← 你的 header
+    return 0.5f * z * (1.0f + metal::precise::tanh(0.7978845608028654f * (z + 0.044715f * z * z * z)));
+}
+template &lt;typename T&gt;
+[[kernel]] void custom_kernel_add_gelu__float16_t_float16_t_float16_t_int32_ts_float16_t(
+  const device float16_t* x [[buffer(0)]],              // ← input_names[0]
+  const device float16_t* y [[buffer(1)]],              // ← input_names[1]
+  const constant int32_t&amp; n [[buffer(2)]],              // ← Python int 变成 constant 标量
+  device float16_t* out [[buffer(3)]],                  // ← output_names[0]
+  uint3 thread_position_in_grid [[thread_position_in_grid]]) {   // ← 因为函数体里用到了它
+    uint i = thread_position_in_grid.x;                 // ← 你的 source
+    if (i &lt; n) {
+        out[i] = T(gelu_tanh(float(x[i]) + float(y[i])));
+    }
+}
+template [[host_name(&quot;custom_kernel_add_gelu__…&quot;)]] [[kernel]]
+decltype(custom_kernel_add_gelu__…&lt;float16_t&gt;) custom_kernel_add_gelu__…&lt;float16_t&gt;;   // ← 用 T = float16_t 实例化
+</code></pre>
+<p>逐项说明：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>生成的部分</th>
+<th>从哪来</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>const device float16_t* x [[buffer(0)]]</code></td>
+<td><code>input_names=[&quot;x&quot;, &quot;y&quot;, &quot;n&quot;]</code> 的前两个是数组，变成只读的 device 指针；<code>[[buffer(i)]]</code> 是 Metal 的参数槽位</td>
+</tr>
+<tr>
+<td><code>const constant int32_t&amp; n</code></td>
+<td>第三个输入是 Python 的 int，MLX 把它当作标量，放进 <code>constant</code> 地址空间</td>
+</tr>
+<tr>
+<td><code>device float16_t* out</code></td>
+<td><code>output_names=[&quot;out&quot;]</code>，可写的 device 指针</td>
+</tr>
+<tr>
+<td><code>uint3 thread_position_in_grid [[…]]</code></td>
+<td>MLX 扫描函数体，发现用到了这个 Metal 属性，才把它加进签名（<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/common/custom_kernel.cpp#L255-L279" title="ml-explore/mlx @ b7779c1 · mlx/backend/common/custom_kernel.cpp" target="_blank" rel="noopener"><span class="src-repo">mlx</span>支持的属性列表</a>）</td>
+</tr>
+<tr>
+<td>函数名里的 <code>float16_t_float16_t_…</code></td>
+<td>由输入、输出的 dtype 拼出来，不同 dtype 是不同的 kernel</td>
+</tr>
+<tr>
+<td>最后的 <code>template [[host_name(…)]]</code></td>
+<td>用 <code>template=[(&quot;T&quot;, x.dtype)]</code> 给的 T 显式实例化</td>
+</tr>
+</tbody>
+</table></div>
+<p>生成签名的代码在 <a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/common/custom_kernel.cpp#L53" title="ml-explore/mlx @ b7779c1 · mlx/backend/common/custom_kernel.cpp" target="_blank" rel="noopener"><span class="src-repo">mlx</span>write_signature</a>，<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/common/custom_kernel.cpp#L92" title="ml-explore/mlx @ b7779c1 · mlx/backend/common/custom_kernel.cpp" target="_blank" rel="noopener"><span class="src-repo">mlx</span>kernel void 的开头</a> 和 <a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/common/custom_kernel.cpp#L350-L352" title="ml-explore/mlx @ b7779c1 · mlx/backend/common/custom_kernel.cpp" target="_blank" rel="noopener"><span class="src-repo">mlx</span>host_name 实例化</a> 都是在这里拼出来的字符串。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 填申请表</div><p>CUDA 像让你从一张白纸开始写申请书：抬头、称呼、正文、落款全部自己来（<code>__global__ void k(const half* x, ...)</code>）。MLX 的 metal_kernel 像一张印好的申请表：抬头和落款（签名、参数槽位、模板实例化）已经印好了，你只需要在“正文”那一栏填内容（source），并在表头勾选“申请人姓名”“附件清单”（input_names、output_names）。你在正文里提到了“位置”（thread_position_in_grid），表格就自动多出一栏让系统填。</p>
+</div>
+<h3 id="x1_metal_elementwise-2">② CUDA ↔ Metal 对照</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>CUDA（C1）</th>
+<th>Metal / MLX（X1）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>block / thread</td>
+<td>threadgroup / thread</td>
+</tr>
+<tr>
+<td>warp（32）</td>
+<td>simdgroup（Apple GPU 上也是 32）</td>
+</tr>
+<tr>
+<td><code>blockIdx.x * blockDim.x + threadIdx.x</code></td>
+<td><code>thread_position_in_grid.x</code>：直接就是全局编号</td>
+</tr>
+<tr>
+<td><code>__shared__</code></td>
+<td><code>threadgroup</code> 内存（X2 会用）</td>
+</tr>
+<tr>
+<td><code>const float* __restrict__ x</code></td>
+<td><code>const device T* x</code></td>
+</tr>
+<tr>
+<td>显存，要拷贝</td>
+<td><strong>统一内存</strong>：CPU 和 GPU 共用同一块，不需要拷贝</td>
+</tr>
+<tr>
+<td>nvcc / Nsight</td>
+<td>Metal Shading Language（C++14 方言）/ Xcode Instruments</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="x1_metal_elementwise-3">③ grid 的语义：线程总数，不是 block 数</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x1_metal_elementwise.py#L43-L49" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x1_metal_elementwise.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>add_gelu（43–49 行）</a></p>
+<pre><code class="language-python">_kernel(inputs=[x, y, n], template=[(&quot;T&quot;, x.dtype)],
+        grid=(max(n, 1), 1, 1), threadgroup=(threadgroup, 1, 1), ...)
+</code></pre>
+<p>这是从 CUDA 转过来最容易错的地方。MLX 的 <code>grid</code> 对应 Metal 的 <code>dispatchThreads</code>（<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/custom_kernel.cpp#L99" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/custom_kernel.cpp" target="_blank" rel="noopener"><span class="src-repo">mlx</span>compute_encoder.dispatch_threads</a>），它的单位是<strong>线程</strong>：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th></th>
+<th>CUDA（C1）</th>
+<th>Metal（X1）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>n = 1000，每组 256</td>
+<td><code>&lt;&lt;&lt;4, 256&gt;&gt;&gt;</code>：你自己算 ⌈1000/256⌉ = 4 个 block</td>
+<td><code>grid=(1000,1,1), threadgroup=(256,1,1)</code>：你给线程总数</td>
+</tr>
+<tr>
+<td>实际线程数</td>
+<td>4 × 256 = 1024，多出 24 个</td>
+<td>1000：最后一组只有 232 个线程</td>
+</tr>
+<tr>
+<td>越界检查</td>
+<td>必须 <code>if (i &lt; n)</code></td>
+<td>一个元素一个线程时，严格说不需要</td>
+</tr>
+</tbody>
+</table></div>
+
+<div class="strip-scroll"><div class="cells" style="grid-template-columns: 256fr 256fr 256fr 232fr 24fr; min-width: 520px">
+<div class="c0">group 0<small>256</small></div><div class="c1">group 1<small>256</small></div><div class="c2">group 2<small>256</small></div><div class="c3">group 3<small>232 个线程</small></div><div class="lbl" style="text-align:left">不存在</div>
+</div></div>
+<p class="legend">和 C1 那张图对比：CUDA 的最后一个 block 有 24 个空转线程，Metal 的最后一个 threadgroup 直接变小（非均匀 threadgroup，Apple GPU 支持）。</p>
+<p>参考解仍然写了 <code>if (i &lt; n)</code>：这是防御性的写法，而且 4 元素版本里确实需要（下一节）。MLX 的文档也专门提醒了这一点：<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/docs/src/dev/custom_metal_kernels.rst#L89-L91" title="ml-explore/mlx @ b7779c1 · docs/src/dev/custom_metal_kernels.rst" target="_blank" rel="noopener"><span class="src-repo">mlx</span>grid 和 threadgroup 是 dispatchThreads 的参数</a>。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 订车 vs 报人数</div><p>CUDA 让你直接订车：“要 4 辆 256 座的大巴”，多出来的座位空着，你自己确保空座位上的人什么都不做。Metal 让你报人数：“一共 1000 人，每辆车最多 256 座”，调度员自己算出要 4 辆车，最后一辆只派 232 座的。你报错了单位（把车数当人数报），就只会来 4 个人。</p>
+</div>
+<h3 id="x1_metal_elementwise-4">④ 函数体：模板、fp32 计算、header</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x1_metal_elementwise.py#L13-L26" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x1_metal_elementwise.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>13–26 行</a></p>
+<pre><code class="language-cpp">uint i = thread_position_in_grid.x;
+if (i &lt; n) {
+    out[i] = T(gelu_tanh(float(x[i]) + float(y[i])));
+}
+</code></pre>
+<ul>
+<li><strong>T 是模板参数</strong>：同一份 source 通过 <code>template=[(&quot;T&quot;, mx.float16)]</code> 实例化出 fp16、bf16、fp32 三个版本。</li>
+<li><strong>在 fp32 里算</strong>：和 T1、C1 一样，<code>float(x[i])</code> 先升精度，算完再 <code>T(...)</code> 降回去。</li>
+<li><strong>header</strong> 放辅助函数。<code>metal::precise::tanh</code> 是精确版本，<code>metal::fast::tanh</code> 是快速近似版本，后者更快但误差更大。这和 CUDA 的 <code>tanhf</code> 与 <code>__tanhf</code> 是同一类选择。</li>
+<li><strong>ensure_row_contiguous</strong>（<a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x1_metal_elementwise.py#L46" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x1_metal_elementwise.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>46 行</a>注释）：默认为 True，输入不连续时 MLX 先复制一份连续的。这和 T1 的 <code>.contiguous()</code> 是同一个目的。</li>
+</ul>
+<h3 id="x1_metal_elementwise-5">⑤ 4 元素版本</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x1_metal_elementwise.py#L28-L35" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x1_metal_elementwise.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>_SRC_VEC（28–35 行）</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x1_metal_elementwise.py#L52-L58" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x1_metal_elementwise.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>add_gelu_vec（52–58 行）</a></p>
+<pre><code class="language-cpp">uint base = thread_position_in_grid.x * N_PER;
+for (uint j = 0; j &lt; N_PER; ++j) {
+    uint i = base + j;
+    if (i &lt; n) out[i] = T(...);
+}
+</code></pre>
+<p>每个线程处理连续的 N_PER 个元素，线程数变成 ⌈n / N_PER⌉。这里 <code>if (i &lt; n)</code> 是<strong>必须</strong>的：n = 1000、N_PER = 4 时有 250 个线程，正好；但 n = 1001 时有 251 个线程，最后一个线程的 j = 1、2、3 都越界。</p>
+<p><code>N_PER</code> 也是模板参数（<code>template=[(&quot;T&quot;, …), (&quot;N_PER&quot;, n_per)]</code>），所以循环次数是编译期常量，编译器可以展开。</p>
+<p>MLX 自己的逐元素 kernel 就是这个结构：<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/unary.h#L3-L19" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/unary.h" target="_blank" rel="noopener"><span class="src-repo">mlx</span>unary_v</a>，每个线程处理 <code>WorkPerThread&lt;T&gt;::n</code> 个元素，并且专门处理了最后一段不满 N 的情况。</p>
+<p>题目页的实测（M2，fp16，n = 2²⁴）：单元素版 42 GB/s，4 元素版 43 GB/s，MLX 自带操作 46 GB/s，同一时刻 <code>x + 1</code> 实测 59 GB/s。差别不大，因为它们都被带宽限制住了。memory-bound kernel 要和<strong>这台机器实测的带宽</strong>比，而不是和标称值比。</p>
+<h3 id="x1_metal_elementwise-6">⑥ 常见坑与自测</h3>
+<ul>
+<li><strong>把 grid 当 block 数</strong>：<code>grid=(cdiv(n, 256), 1, 1)</code> 只会启动 ⌈n/256⌉ 个线程，结果大部分元素没被算。</li>
+<li><strong>标量用 Python float 传 int 的地方</strong>：n 是 int，会变成 <code>int32_t</code>；如果传了 float，类型就对不上。</li>
+<li><strong>忘了 template</strong>：source 里用了 T，调用时没给 <code>template=[(&quot;T&quot;, ...)]</code>，编译失败。</li>
+<li><strong>在 fp16 里算 z³</strong>：和 T1 一样，|z| &gt; 40 左右就溢出。</li>
+</ul>
+
+<details class="answer"><summary>自测 1：n = 2²⁴，threadgroup = 256，单元素版本启动多少个线程？多少个 threadgroup？</summary><div class="body"><p>grid = 2²⁴ = 16,777,216 个线程，2²⁴ / 256 = 65,536 个 threadgroup，正好整除，没有不满的组。</p>
+</div></details>
+
+<details class="answer"><summary>自测 2：用 CUDA 的思路写成 grid=((n + 255) // 256, 1, 1)，n = 1000 时会发生什么？</summary><div class="body"><p>只启动 4 个线程（grid 是线程总数），算出 out[0..3]，其余 996 个元素保持未初始化。测试会失败，但不会报错。</p>
+</div></details>
+<h3 id="x1_metal_elementwise-7">源码与资料索引</h3>
+<p><strong>本仓库</strong>：<a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x1_metal_elementwise.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x1_metal_elementwise.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>solutions/x1_metal_elementwise.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/mine/x1_metal_elementwise.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · mine/x1_metal_elementwise.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>mine/x1_metal_elementwise.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/tests/test_x1_metal_elementwise.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · tests/test_x1_metal_elementwise.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>tests/test_x1_metal_elementwise.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/5d70840a62f8d16dda5af8a6b402b4b07c76c93f/content/x1.md" title="kzhou003/gpu-kernel-drills @ 5d70840 · content/x1.md" target="_blank" rel="noopener"><span class="src-repo">drills</span>content/x1.md</a> · 对照：<a href="c1_elementwise.html">C1</a> · <a href="t1_add_gelu.html">T1</a></p>
+<p><strong>MLX</strong>：<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/docs/src/dev/custom_metal_kernels.rst" title="ml-explore/mlx @ b7779c1 · docs/src/dev/custom_metal_kernels.rst" target="_blank" rel="noopener"><span class="src-repo">mlx</span>custom_metal_kernels.rst</a> · <a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/common/custom_kernel.cpp#L53" title="ml-explore/mlx @ b7779c1 · mlx/backend/common/custom_kernel.cpp" target="_blank" rel="noopener"><span class="src-repo">mlx</span>write_signature</a> · <a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/custom_kernel.cpp#L99" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/custom_kernel.cpp" target="_blank" rel="noopener"><span class="src-repo">mlx</span>dispatch_threads</a> · <a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/unary.h#L3" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/unary.h" target="_blank" rel="noopener"><span class="src-repo">mlx</span>unary_v</a> · <a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/docs/src/dev/metal_debugger.rst" title="ml-explore/mlx @ b7779c1 · docs/src/dev/metal_debugger.rst" target="_blank" rel="noopener"><span class="src-repo">mlx</span>Metal debugger</a></p>
+<p><strong>文档</strong>：<a href="https://ml-explore.github.io/mlx/build/html/dev/custom_metal_kernels.html">MLX · Custom Metal Kernels</a> · <a href="https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf">Metal Shading Language Specification</a></p>
+
+</main>
+<script>
+// ---------- React-Flow-style diagram renderer (pure SVG, works offline and in print) ----------
+(function () {
+  var NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, parent) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+  function txt(parent, x, y, s, cls, anchor) { var t = el("text", { x: x, y: y, "class": cls, "text-anchor": anchor || "middle" }, parent); t.textContent = s; return t; }
+  function render(host, spec) {
+    var cfg = spec.cfg || {}, CW = cfg.cw || 200, RH = cfg.rh || 88, NW = cfg.nw || 160, PAD = 26;
+    var N = {}, maxX = 0, maxY = 0;
+    spec.nodes.forEach(function (n) {
+      var w = NW * n.w, h = n.s ? 52 : 38, x = PAD + n.c * CW, y = PAD + 14 + n.r * RH;
+      N[n.id] = { n: n, x: x, y: y, w: w, h: h, cx: x + w / 2, cy: y + h / 2 };
+      maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+    });
+    var groups = (spec.groups || []).map(function (g) {
+      var x0 = PAD + g.c0 * CW - 14, y0 = PAD + 14 + g.r0 * RH - 28, x1 = PAD + g.c1 * CW + NW + 14, y1 = PAD + 14 + g.r1 * RH + 52 + 14;
+      maxX = Math.max(maxX, x1); maxY = Math.max(maxY, y1); return { g: g, x0: x0, y0: y0, x1: x1, y1: y1 };
+    });
+    var W = maxX + PAD, H = maxY + PAD;
+    var svg = el("svg", { viewBox: "0 0 " + W + " " + H, width: W, role: "img", "aria-label": spec.title });
+    var uid = "f" + Math.random().toString(36).slice(2, 8);
+    var defs = el("defs", {}, svg);
+    var pat = el("pattern", { id: uid + "dot", width: 16, height: 16, patternUnits: "userSpaceOnUse" }, defs);
+    el("circle", { cx: 1, cy: 1, r: 1, "class": "f-bgdot" }, pat);
+    var bg = el("rect", { x: 0, y: 0, width: W, height: H, fill: "url(#" + uid + "dot)" }, svg);
+    groups.forEach(function (G) {
+      var gg = el("g", { "class": "f-grp" + (G.g.k ? " k-" + G.g.k : "") }, svg);
+      el("rect", { x: G.x0, y: G.y0, width: G.x1 - G.x0, height: G.y1 - G.y0, rx: 10 }, gg);
+      txt(gg, G.x0 + 10, G.y0 + 15, G.g.t, "", "start");
+    });
+    var edgeLayer = el("g", {}, svg), nodeLayer = el("g", {}, svg), labelLayer = el("g", {}, svg);   // labels on top
+    function side(A, B) {
+      var dx = B.cx - A.cx, dy = B.cy - A.cy;
+      if (Math.abs(dx) >= Math.abs(dy) * 0.9) return dx >= 0 ? ["r", "l"] : ["l", "r"];
+      return dy >= 0 ? ["b", "t"] : ["t", "b"];
+    }
+    function port(P, s) { return s === "r" ? [P.x + P.w, P.cy] : s === "l" ? [P.x, P.cy] : s === "t" ? [P.cx, P.y] : [P.cx, P.y + P.h]; }
+    function dir(s) { return s === "r" ? [1, 0] : s === "l" ? [-1, 0] : s === "t" ? [0, -1] : [0, 1]; }
+    var nodeEdges = {};
+    spec.edges.forEach(function (e, i) {
+      var as = e.a.split(":"), bs = e.b.split(":"), A = N[as[0]], B = N[bs[0]];
+      var auto = side(A, B), sa = as[1] || auto[0], sb = bs[1] || auto[1];
+      var p0 = port(A, sa), p3 = port(B, sb), d0 = dir(sa), d3 = dir(sb);
+      var dist = Math.hypot(p3[0] - p0[0], p3[1] - p0[1]), off = Math.max(36, Math.min(140, dist * 0.45));
+      if (sa === sb) off = Math.max(off, 60);                     // U-shaped loop between two ports on the same side
+      var p1 = [p0[0] + d0[0] * off, p0[1] + d0[1] * off], p2 = [p3[0] + d3[0] * (off + 6), p3[1] + d3[1] * (off + 6)];
+      var end = [p3[0] + d3[0] * 7, p3[1] + d3[1] * 7];             // stop before the arrowhead
+      var cls = "f-e" + (e.k ? " k-" + e.k : "") + (e.anim ? " anim" : "") + (e.dash ? " dash" : "");
+      var path = el("path", { d: "M" + p0 + " C" + p1 + " " + p2 + " " + end, "class": cls }, edgeLayer);
+      var ah = el("path", { d: "M" + p3 + " l" + (-d3[0] * 8 + d3[1] * 4.5) + "," + (-d3[1] * 8 + d3[0] * 4.5) + " l" + (-d3[1] * 9) + "," + (d3[0] * 9) + " z",
+        "class": "f-ah" + (e.k ? " k-" + e.k : "") }, edgeLayer);
+      var items = [path, ah];
+      if (e.t) {
+        var t = 0.5, mx = Math.pow(1 - t, 3) * p0[0] + 3 * Math.pow(1 - t, 2) * t * p1[0] + 3 * (1 - t) * t * t * p2[0] + t * t * t * end[0];
+        var my = Math.pow(1 - t, 3) * p0[1] + 3 * Math.pow(1 - t, 2) * t * p1[1] + 3 * (1 - t) * t * t * p2[1] + t * t * t * end[1];
+        var lg = el("g", { "class": "f-el" }, labelLayer);
+        var tw = 12; for (var ci = 0; ci < e.t.length; ci++) tw += e.t.charCodeAt(ci) > 255 ? 11.5 : 6.6; tw = Math.max(24, tw);
+        // label wider than the gap it sits in: lift it above a horizontal edge / beside a vertical one
+        var horiz = (sa === "l" || sa === "r") && (sb === "l" || sb === "r");
+        var gap = horiz ? Math.abs(end[0] - p0[0]) : Math.abs(end[1] - p0[1]);
+        if (horiz && tw > gap - 6) my = Math.min(p0[1], end[1]) - 15;
+        else if (!horiz && sa !== sb && 20 > gap - 4) mx = Math.max(p0[0], end[0]) + tw / 2 + 8;
+        el("rect", { x: mx - tw / 2, y: my - 10, width: tw, height: 18, rx: 5 }, lg);
+        txt(lg, mx, my + 3.5, e.t, "");
+        items.push(lg);
+      }
+      [as[0], bs[0]].forEach(function (id) { (nodeEdges[id] = nodeEdges[id] || []).push({ items: items, other: id === as[0] ? bs[0] : as[0] }); });
+    });
+    var nodeEls = {};
+    spec.nodes.forEach(function (n) {
+      var P = N[n.id], g = el("g", { "class": "f-node" + (n.k ? " k-" + n.k : "") }, nodeLayer);
+      el("rect", { x: P.x, y: P.y, width: P.w, height: P.h, rx: 9, "class": "f-box" }, g);
+      txt(g, P.cx, P.y + (n.s ? 21 : 23.5), n.t, "f-t");
+      if (n.s) txt(g, P.cx, P.y + 39, n.s, "f-s");
+      [["l", P.x, P.cy], ["r", P.x + P.w, P.cy], ["t", P.cx, P.y], ["b", P.cx, P.y + P.h]].forEach(function (h) {
+        el("circle", { cx: h[1], cy: h[2], r: 2.6, "class": "f-handle" }, g);
+      });
+      nodeEls[n.id] = g;
+      g.addEventListener("mouseenter", function () {
+        svg.classList.add("f-on"); g.classList.add("hl");
+        (nodeEdges[n.id] || []).forEach(function (c) { c.items.forEach(function (x) { x.classList.add("hl"); }); nodeEls[c.other].classList.add("hl"); });
+      });
+      g.addEventListener("mouseleave", function () {
+        svg.classList.remove("f-on"); svg.querySelectorAll(".hl").forEach(function (x) { x.classList.remove("hl"); });
+      });
+    });
+    host.appendChild(svg);
+    // grow the canvas to whatever was actually drawn (loop edges swing outside the node grid)
+    try {
+      var bb = svg.getBBox(), x0 = Math.min(0, bb.x - 12), y0 = Math.min(0, bb.y - 12);
+      var x1 = Math.max(W, bb.x + bb.width + 12), y1 = Math.max(H, bb.y + bb.height + 12);
+      svg.setAttribute("viewBox", x0 + " " + y0 + " " + (x1 - x0) + " " + (y1 - y0));
+      svg.setAttribute("width", x1 - x0);
+      bg.setAttribute("x", x0); bg.setAttribute("y", y0); bg.setAttribute("width", x1 - x0); bg.setAttribute("height", y1 - y0);
+    } catch (err) {}
+  }
+  document.querySelectorAll(".flow-body[data-flow]").forEach(function (h) {
+    try { render(h, JSON.parse(h.getAttribute("data-flow"))); } catch (e) { h.textContent = "diagram error: " + e; }
+  });
+})();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+(function () {
+  var root = document.documentElement, KEY = "gkd-theme";
+  try { var t = localStorage.getItem(KEY); if (t) root.setAttribute("data-theme", t); } catch (e) {}
+  document.getElementById("theme-btn").addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") ? root.getAttribute("data-theme") === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    var next = dark ? "light" : "dark"; root.setAttribute("data-theme", next);
+    try { localStorage.setItem(KEY, next); } catch (e) {}
+  });
+  document.querySelectorAll(".codebox .copy").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var code = b.closest(".codebox").querySelector("code").innerText;
+      (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject()).then(function () {
+        b.textContent = "已复制"; setTimeout(function () { b.textContent = "复制"; }, 1200);
+      }, function () { b.textContent = "复制失败"; });
+    });
+  });
+  if (window.hljs) document.querySelectorAll("pre code").forEach(function (el) {
+    if (!el.className) el.classList.add("language-plaintext");
+    try { hljs.highlightElement(el); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

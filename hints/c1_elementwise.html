@@ -1,0 +1,930 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C1 答疑：逐行读懂 c1_elementwise.cu</title>
+<meta name="description" content="把读 C1 参考解时卡住的 8 个问题讲透：TORCH_CHECK 和 at::kFloat、blockDim 从哪来、at/c10/torch、launch 配置、__device__ __forceinline__、grid-stride loop、block 数上限、bias[i % cols]。每节都有图、类比、算例和源码链接。">
+<style>
+:root {
+  --bg: #f7f6f2; --surface: #ffffff; --surface-2: #f0eee8; --border: #dedad0;
+  --text: #22211e; --muted: #6b675e; --accent: #2f6fdb; --accent-soft: #e3ecfb;
+  --code-bg: #f6f4ef; --l1: #2e8b57; --l1-soft: #e4f3ea; --l2: #b7791f; --l2-soft: #fbf0dc;
+  --l3: #c0392b; --l3-soft: #fbe5e2; --ok: #2e8b57; --bad: #c0392b; --idea: #7a4fc4; --idea-soft: #efe8fb;
+  --tk-kw: #8a3ab9; --tk-str: #2f7d32; --tk-num: #b5541c; --tk-com: #8a867c; --tk-fn: #2457b8; --tk-type: #0f7b8a; --tk-meta: #b7791f;
+  --shadow: 0 1px 2px rgba(0,0,0,.05), 0 2px 8px rgba(0,0,0,.04); --radius: 10px;
+  --font: "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Code", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+  --sidebar: 268px; color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #17181b; --surface: #1f2125; --surface-2: #26282d; --border: #363a41; --text: #e6e4df; --muted: #a19d94;
+  --accent: #7aa7ff; --accent-soft: #23314d; --code-bg: #1b1d21; --l1: #5cc98b; --l1-soft: #1d3327; --l2: #e6b25c; --l2-soft: #3a2f1b;
+  --l3: #f08070; --l3-soft: #3d2320; --ok: #5cc98b; --bad: #f08070; --idea: #b79cf0; --idea-soft: #2c2440;
+  --tk-kw: #d19ef0; --tk-str: #8fd18f; --tk-num: #f0a35e; --tk-com: #7f7b73; --tk-fn: #8cb4ff; --tk-type: #5cc9d6; --tk-meta: #e6b25c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #17181b; --surface: #1f2125; --surface-2: #26282d; --border: #363a41; --text: #e6e4df; --muted: #a19d94;
+  --accent: #7aa7ff; --accent-soft: #23314d; --code-bg: #1b1d21; --l1: #5cc98b; --l1-soft: #1d3327; --l2: #e6b25c; --l2-soft: #3a2f1b;
+  --l3: #f08070; --l3-soft: #3d2320; --ok: #5cc98b; --bad: #f08070; --idea: #b79cf0; --idea-soft: #2c2440;
+  --tk-kw: #d19ef0; --tk-str: #8fd18f; --tk-num: #f0a35e; --tk-com: #7f7b73; --tk-fn: #8cb4ff; --tk-type: #5cc9d6; --tk-meta: #e6b25c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark; }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 60px; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15.5px/1.75 var(--font); overflow-x: hidden; }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+.btn { appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 8px;
+  padding: 3px 10px; font: inherit; font-size: 13px; cursor: pointer; line-height: 1.5; }
+.btn:hover { border-color: var(--accent); }
+
+/* top bar + sidebar */
+.topbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); font-size: 14px; }
+.topbar .home { font-weight: 700; color: var(--text); white-space: nowrap; }
+.topbar .spacer { flex: 1; }
+.topbar .prog-mini { color: var(--muted); font-size: 13px; white-space: nowrap; }
+#nav-btn { display: none; }
+.layout { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); }
+.sidebar { position: sticky; top: 49px; height: calc(100vh - 49px); height: calc(100dvh - 49px); overflow-y: auto;
+  border-right: 1px solid var(--border); padding: 14px 10px 40px 14px; font-size: 13.5px; scrollbar-width: thin; }
+.nav-group { margin: 14px 0 4px; font-size: 11.5px; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.nav-group:first-child { margin-top: 0; }
+.nav-tier { margin: 18px 0 2px; font-size: 11px; font-weight: 800; letter-spacing: .12em; color: var(--accent); text-transform: uppercase; }
+.nav-tier:first-child { margin-top: 0; }
+.tier-banner { margin: 72px 0 -40px; font: 800 13px var(--font); letter-spacing: .3em; color: var(--accent); }
+.nav-item { display: flex; align-items: baseline; gap: 6px; padding: 3px 8px; border-radius: 6px; color: var(--text); line-height: 1.45; }
+.nav-item:hover { background: var(--surface-2); text-decoration: none; }
+.nav-item.cur { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav-item .nid { font: 700 12px var(--mono); color: var(--accent); min-width: 22px; }
+.nav-item .nmin { margin-left: auto; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.nav-item.done .nid::after { content: " ✓"; color: var(--ok); }
+.nav-item.done { color: var(--muted); }
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  #nav-btn { display: inline-block; }
+  .sidebar { position: fixed; z-index: 40; top: 49px; left: 0; width: min(300px, 85vw); background: var(--bg);
+    transform: translateX(-102%); transition: transform .2s; box-shadow: var(--shadow); }
+  body.nav-open .sidebar { transform: none; }
+}
+
+/* page */
+.page { width: 100%; max-width: 940px; margin: 0 auto; padding: 24px 20px 120px; min-width: 0; }
+.hero { margin: 8px 0 28px; }
+.kicker { color: var(--muted); font-size: 13px; letter-spacing: .04em; }
+.hero h1 { font-size: 30px; line-height: 1.3; margin: 4px 0 10px; }
+.lede { color: var(--muted); margin: 4px 0 12px; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.badge { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 999px; padding: 1px 10px; font-size: 12.5px; color: var(--muted); }
+.badge b { color: var(--text); font-weight: 600; }
+.badge code { font-size: 11.5px; }
+.badge.diff-易 b { color: var(--ok); } .badge.diff-中 b { color: var(--l2); } .badge.diff-难 b { color: var(--bad); }
+.done-toggle { cursor: pointer; } .done-toggle input { margin: 0 4px 0 0; }
+.progress { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); margin-top: 10px; }
+.progress > div { height: 100%; background: var(--ok); width: 0; transition: width .3s; }
+
+section.part, section.drill { margin: 0 0 56px; scroll-margin-top: 60px; }
+section.drill { border-top: 3px solid var(--accent); padding-top: 18px; }
+section.part > h2, .drill-head h2 { font-size: 25px; line-height: 1.35; margin: 4px 0 6px; }
+.drill-head .did { font: 700 .85em var(--mono); color: #fff; background: var(--accent); border-radius: 6px; padding: 1px 8px; margin-right: 10px; vertical-align: 2px; }
+.track-banner { margin: 64px 0 28px; padding: 16px 18px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); scroll-margin-top: 60px; }
+.track-banner h2 { margin: 0; font-size: 22px; } .track-banner p { margin: 4px 0 0; color: var(--muted); }
+.mini-toc { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px; margin: 12px 0 18px; font-size: 13.5px; }
+.mini-toc ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 28px; }
+@media (max-width: 640px) { .mini-toc ol { columns: 1; } .page { padding: 16px 16px 96px; } .hero h1 { font-size: 24px; } }
+h3 { font-size: 19px; margin: 34px 0 10px; padding-top: 8px; border-top: 1px solid var(--border); scroll-margin-top: 60px; }
+h4 { font-size: 16px; margin: 20px 0 6px; }
+p, ul, ol { margin: 8px 0; } li { margin: 3px 0; }
+hr { border: 0; border-top: 1px dashed var(--border); margin: 20px 0; }
+blockquote { margin: 12px 0; padding: 6px 14px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+code { font-family: var(--mono); font-size: .86em; background: var(--code-bg); border: 1px solid var(--border); padding: 0 4px; border-radius: 4px; }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto;
+  font-size: 13px; line-height: 1.55; margin: 10px 0; tab-size: 4; }
+pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+:not(pre) > code { overflow-wrap: anywhere; }
+.codebox { margin: 12px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--code-bg); }
+.codebox pre { margin: 0; border: 0; border-radius: 0; max-height: 640px; }
+details.solution .codebox pre { max-height: none; }
+.code-head { display: flex; align-items: center; gap: 10px; padding: 5px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.code-head .path { font-family: var(--mono); font-weight: 600; } .code-head .btn { margin-left: auto; padding: 1px 8px; font-size: 12px; }
+.table-wrap { overflow-x: auto; margin: 10px 0; }
+table { border-collapse: collapse; font-size: 13.5px; min-width: 60%; background: var(--surface); }
+th, td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+th { background: var(--surface-2); font-weight: 600; }
+.callout { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 10px 14px; margin: 14px 0; box-shadow: var(--shadow); }
+.callout > .callout-title { font-weight: 700; margin-bottom: 2px; }
+.callout.info { border-left: 4px solid var(--accent); } .callout.warn { border-left: 4px solid var(--bad); }
+.callout.ok { border-left: 4px solid var(--ok); } .callout.idea { border-left: 4px solid var(--idea); }
+details.hint, details.solution { border: 1px solid var(--border); border-radius: var(--radius); margin: 12px 0; background: var(--surface); box-shadow: var(--shadow); }
+details.hint > summary, details.solution > summary { cursor: pointer; list-style: none; padding: 9px 14px; font-weight: 600;
+  display: flex; align-items: center; gap: 10px; border-radius: var(--radius); flex-wrap: wrap; }
+details > summary::-webkit-details-marker { display: none; }
+details.hint > summary::after, details.solution > summary::after { content: "展开 ▸"; margin-left: auto; font-size: 12px; color: var(--muted); font-weight: 400; }
+details[open].hint > summary::after, details[open].solution > summary::after { content: "收起 ▾"; }
+details[open].hint > summary, details[open].solution > summary { border-bottom: 1px solid var(--border); border-radius: var(--radius) var(--radius) 0 0; }
+details.hint > .body, details.solution > .body { padding: 6px 16px 14px; }
+.lvl { display: inline-block; border-radius: 6px; padding: 0 8px; font-size: 12px; font-weight: 700; color: #fff; }
+details.hint.l1 > summary { background: var(--l1-soft); } details.hint.l1 .lvl { background: var(--l1); }
+details.hint.l2 > summary { background: var(--l2-soft); } details.hint.l2 .lvl { background: var(--l2); }
+details.hint.l3 > summary { background: var(--l3-soft); } details.hint.l3 .lvl { background: var(--l3); }
+details.solution { border-color: var(--bad); } details.solution > summary { background: var(--l3-soft); } details.solution .lvl { background: var(--bad); }
+.spoiler-note { font-size: 12px; color: var(--muted); font-weight: 400; }
+details.answer { border: 1px dashed var(--border); border-radius: 8px; margin: 10px 0; background: var(--surface-2); }
+details.answer > summary { cursor: pointer; padding: 6px 12px; color: var(--accent); font-size: 14px; }
+details.answer > .body { padding: 2px 14px 10px; }
+a.src { display: inline-flex; align-items: baseline; gap: 4px; margin: 1px 0; padding: 0 7px; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--surface); font: 12.5px/1.7 var(--mono); color: var(--accent); white-space: nowrap; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; vertical-align: baseline; }
+a.src:hover { border-color: var(--accent); text-decoration: none; }
+a.src .src-repo { font-size: 10.5px; color: var(--muted); }
+a.src .src-repo::after { content: " ›"; }
+.muted { color: var(--muted); } .small { font-size: 13px; }
+.diagram { overflow-x: auto; margin: 12px 0; } .diagram svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.diagram svg text { fill: var(--text); font-family: var(--font); }
+
+/* syntax highlighting (highlight.js classes, colours follow the theme) */
+.hljs-keyword, .hljs-built_in, .hljs-literal { color: var(--tk-kw); }
+.hljs-string, .hljs-char, .hljs-regexp { color: var(--tk-str); }
+.hljs-number { color: var(--tk-num); }
+.hljs-comment, .hljs-quote { color: var(--tk-com); font-style: italic; }
+.hljs-title, .hljs-title.function_, .hljs-function .hljs-title { color: var(--tk-fn); }
+.hljs-type, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--tk-type); }
+.hljs-meta, .hljs-meta .hljs-keyword, .hljs-decorator { color: var(--tk-meta); }
+.hljs-attr, .hljs-variable, .hljs-params { color: inherit; }
+
+@media print {
+  .topbar, .sidebar { display: none !important; } .layout { display: block; }
+  details { break-inside: avoid; } .codebox pre { max-height: none; }
+}
+
+/* ---------- React-Flow-style diagrams ---------- */
+:root { --f-dot: #d9d5cb; --f-acc: #2f6fdb; --f-acc-bg: #e3ecfb; --f-warn: #b7791f; --f-warn-bg: #fbf0dc; --f-pass: #2e8b57; --f-pass-bg: #e4f3ea;
+  --f-vio: #7a4fc4; --f-vio-bg: #efe8fb; --f-teal: #0f7b8a; --f-teal-bg: #e0f2f4; --f-todo: #c0392b; --f-todo-bg: #fbe5e2; --f-hl: #ffb020; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --f-dot: #30333a; --f-acc: #7aa7ff; --f-acc-bg: #23314d; --f-warn: #e6b25c; --f-warn-bg: #3a2f1b;
+  --f-pass: #5cc98b; --f-pass-bg: #1d3327; --f-vio: #b79cf0; --f-vio-bg: #2c2440; --f-teal: #5cc9d6; --f-teal-bg: #163238; --f-todo: #f08070; --f-todo-bg: #3d2320; } }
+:root[data-theme="dark"] { --f-dot: #30333a; --f-acc: #7aa7ff; --f-acc-bg: #23314d; --f-warn: #e6b25c; --f-warn-bg: #3a2f1b;
+  --f-pass: #5cc98b; --f-pass-bg: #1d3327; --f-vio: #b79cf0; --f-vio-bg: #2c2440; --f-teal: #5cc9d6; --f-teal-bg: #163238; --f-todo: #f08070; --f-todo-bg: #3d2320; }
+figure.flow { margin: 16px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.flow-head { display: flex; align-items: baseline; gap: 10px; padding: 7px 12px; font-weight: 700; font-size: 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.flow-hint { margin-left: auto; font-weight: 400; font-size: 11.5px; color: var(--muted); }
+.flow-body { overflow-x: auto; }
+.flow-body svg { display: block; margin: 0 auto; max-width: 100%; height: auto; font-family: var(--font); }
+figure.flow figcaption { padding: 7px 12px 9px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+.f-bgdot { fill: var(--f-dot); }
+.f-node rect.f-box { fill: var(--surface); stroke: var(--border); stroke-width: 1.3; filter: drop-shadow(0 1px 1.5px rgba(10,20,40,.10)); transition: stroke-width .15s; }
+.f-node text.f-t { fill: var(--text); font-size: 13px; font-weight: 650; }
+.f-node text.f-s { fill: var(--muted); font-size: 11px; font-family: var(--mono); }
+.f-node .f-handle { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; }
+.f-node.k-acc rect.f-box { fill: var(--f-acc-bg); stroke: var(--f-acc); } .f-node.k-warn rect.f-box { fill: var(--f-warn-bg); stroke: var(--f-warn); }
+.f-node.k-pass rect.f-box { fill: var(--f-pass-bg); stroke: var(--f-pass); } .f-node.k-vio rect.f-box { fill: var(--f-vio-bg); stroke: var(--f-vio); }
+.f-node.k-teal rect.f-box { fill: var(--f-teal-bg); stroke: var(--f-teal); } .f-node.k-todo rect.f-box { fill: var(--f-todo-bg); stroke: var(--f-todo); }
+.f-node.k-dark rect.f-box { fill: var(--text); stroke: var(--text); } .f-node.k-dark text { fill: var(--bg) !important; }
+.f-node.k-ghost rect.f-box { fill: none; stroke-dasharray: 4 3; }
+.f-grp rect { fill: none; stroke: var(--border); stroke-width: 1.4; stroke-dasharray: 6 4; }
+.f-grp text { fill: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.f-grp.k-acc rect { fill: var(--f-acc-bg); fill-opacity: .35; stroke: var(--f-acc); } .f-grp.k-warn rect { fill: var(--f-warn-bg); fill-opacity: .45; stroke: var(--f-warn); }
+.f-grp.k-pass rect { fill: var(--f-pass-bg); fill-opacity: .45; stroke: var(--f-pass); } .f-grp.k-vio rect { fill: var(--f-vio-bg); fill-opacity: .45; stroke: var(--f-vio); }
+.f-grp.k-teal rect { fill: var(--f-teal-bg); fill-opacity: .45; stroke: var(--f-teal); } .f-grp.k-todo rect { fill: var(--f-todo-bg); fill-opacity: .45; stroke: var(--f-todo); }
+.f-e { fill: none; stroke: var(--muted); stroke-width: 1.6; transition: opacity .15s; }
+.f-e.k-acc { stroke: var(--f-acc); } .f-e.k-warn { stroke: var(--f-warn); } .f-e.k-pass { stroke: var(--f-pass); }
+.f-e.k-vio { stroke: var(--f-vio); } .f-e.k-teal { stroke: var(--f-teal); } .f-e.k-todo { stroke: var(--f-todo); }
+.f-ah { fill: var(--muted); } .f-ah.k-acc { fill: var(--f-acc); } .f-ah.k-warn { fill: var(--f-warn); } .f-ah.k-pass { fill: var(--f-pass); }
+.f-ah.k-vio { fill: var(--f-vio); } .f-ah.k-teal { fill: var(--f-teal); } .f-ah.k-todo { fill: var(--f-todo); }
+.f-e.dash { stroke-dasharray: 5 4; }
+.f-e.anim { stroke-dasharray: 6 4; animation: fdash .9s linear infinite; }
+@keyframes fdash { to { stroke-dashoffset: -20; } }
+@media (prefers-reduced-motion: reduce) { .f-e.anim { animation: none; } }
+.f-el rect { fill: var(--surface); stroke: var(--border); }
+.f-el text { fill: var(--text); font-size: 11px; font-family: var(--mono); }
+svg.f-on .f-e:not(.hl), svg.f-on .f-el:not(.hl), svg.f-on .f-ah:not(.hl) { opacity: .15; }
+svg.f-on .f-node:not(.hl) { opacity: .4; }
+svg .f-node.hl rect.f-box { stroke-width: 2.4; }
+.callout.analogy { border-left: 4px solid #d9822b; background: color-mix(in srgb, #d9822b 7%, var(--surface)); }
+.callout.analogy > .callout-title { color: #b8691c; }
+
+.page { max-width: 900px; }
+.qnav { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.qnav a { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 1px 10px; font-size: 13px; }
+.qnav a:hover { border-color: var(--accent); text-decoration: none; }
+.q { font-size: 13px; color: var(--muted); margin: -4px 0 10px; }
+.q b { color: var(--text); }
+/* element/thread cell strips */
+.cells { display: grid; gap: 3px; margin: 8px 0; }
+.cells > div { border: 1px solid var(--border); border-radius: 5px; padding: 2px 0; text-align: center; font: 11.5px/1.35 var(--mono); background: var(--surface); }
+.cells > div small { display: block; color: var(--muted); font-size: 10px; }
+.cells .lbl { border: 0; background: none; text-align: right; padding-right: 6px; color: var(--muted); font-family: var(--font); }
+.c0 { background: var(--f-acc-bg) !important; border-color: var(--f-acc) !important; }
+.c1 { background: var(--f-warn-bg) !important; border-color: var(--f-warn) !important; }
+.c2 { background: var(--f-pass-bg) !important; border-color: var(--f-pass) !important; }
+.c3 { background: var(--f-vio-bg) !important; border-color: var(--f-vio) !important; }
+.cx { background: repeating-linear-gradient(135deg, var(--surface), var(--surface) 4px, var(--surface-2) 4px, var(--surface-2) 8px) !important; color: var(--muted); border-style: dashed !important; }
+.strip-scroll { overflow-x: auto; }
+td:first-child code { white-space: nowrap; }
+.legend { font-size: 12.5px; color: var(--muted); margin: 2px 0 10px; }
+.legend span { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; margin: 0 3px 0 10px; border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="home" href="../index.html">Kernel Dev 训练营</a><a href="index.html">/ 提示与讲解</a>
+  <span class="spacer"></span>
+  <button type="button" class="btn" id="theme-btn" title="切换明暗">◐</button>
+</header>
+<main class="page" id="top">
+<section class="hero">
+  <div class="kicker">C1 提示与讲解 · Track C · CUDA C++ · 对照 <code>solutions/c1_elementwise.cu</code> 逐行读</div>
+  <h1>C1 答疑：逐行读懂 c1_elementwise.cu</h1>
+  <p class="lede">把读 C1 参考解时卡住的 8 个问题讲透：TORCH_CHECK 和 at::kFloat、blockDim 从哪来、at/c10/torch、launch 配置、__device__ __forceinline__、grid-stride loop、block 数上限、bias[i % cols]。每节都有图、类比、算例和源码链接。</p>
+  <nav class="qnav"><a href="#c1_elementwise-1">① TORCH_CHECK 在干什么？at::kFloat 从哪来？</a><a href="#c1_elementwise-2">② blockDim.x 从哪来？为什么点不进去？</a><a href="#c1_elementwise-3">③ at 是什么？at / c10 / torch 什么关系？</a><a href="#c1_elementwise-4">④ vector_add：threads = 256 和 ceil 除法</a><a href="#c1_elementwise-5">⑤ __device__ __forceinline__ 是什么意思？</a><a href="#c1_elementwise-6">⑥ grid-stride loop：一个线程处理好几个元素</a><a href="#c1_elementwise-7">⑦ block 数上限 sms × 32 在哪里？为什么要限？</a><a href="#c1_elementwise-8">⑧ bias[i % cols]：扁平下标怎么找到列号</a><a href="#c1_elementwise-9">源码与资料索引</a></nav>
+</section>
+
+<div class="callout info"><div class="callout-title">怎么读这一页</div><p>每一节对应一个你问过的问题，开头标出它在 <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/c1_elementwise.cu" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/c1_elementwise.cu" target="_blank" rel="noopener"><span class="src-repo">drills</span>c1_elementwise.cu</a> 里的行号（点灰色小标签可以跳到 GitHub 上的那一行）。图里的节点可以悬停，相连的边会高亮。PyTorch 的链接都钉在固定 commit 上，行号不会漂移。</p>
+</div>
+<h3 id="c1_elementwise-1">① TORCH_CHECK 在干什么？at::kFloat 从哪来？</h3>
+<p class="q">你问的是 <b>第 13–16 行</b>：<code>TORCH_CHECK((t).scalar_type() == at::kFloat, #t " must be float32")</code> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/c1_elementwise.cu#L13-L16" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/c1_elementwise.cu" target="_blank" rel="noopener"><span class="src-repo">drills</span>c1_elementwise.cu:13–16</a></p>
+<p>一句话：<strong>在 kernel 启动之前，确认输入张量满足 kernel 的假设；不满足就抛异常，Python 那边看到一个写清楚原因的 <code>RuntimeError</code>。</strong></p>
+<p>这三行在文件里是一个宏的一部分，三项检查一起做：</p>
+<pre><code class="language-cpp">#define CHECK_F32_CUDA(t)                                                   \
+  TORCH_CHECK((t).is_cuda(), #t &quot; must be a CUDA tensor&quot;);                  \
+  TORCH_CHECK((t).is_contiguous(), #t &quot; must be contiguous&quot;);               \
+  TORCH_CHECK((t).scalar_type() == at::kFloat, #t &quot; must be float32&quot;)
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>检查</th>
+<th>为什么 kernel 需要它</th>
+<th>不检查会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>is_cuda()</code></td>
+<td>kernel 只能读显存</td>
+<td>把 CPU 内存地址交给 GPU：非法地址错误</td>
+</tr>
+<tr>
+<td><code>is_contiguous()</code></td>
+<td>kernel 用 <code>x[i]</code> 按连续下标读</td>
+<td>转置后的视图会被按错误顺序读，结果错但不报错</td>
+</tr>
+<tr>
+<td><code>scalar_type() == at::kFloat</code></td>
+<td>kernel 写的是 <code>data_ptr&lt;float&gt;()</code>，按 4 字节 float 解读</td>
+<td>fp16 张量的字节被当成 float 读：<strong>静默的垃圾值</strong></td>
+</tr>
+</tbody>
+</table></div>
+
+<figure class="flow"><div class="flow-head">TORCH_CHECK 失败时，错误怎么一路回到 Python<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;TORCH_CHECK 失败时，错误怎么一路回到 Python&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;py&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;Python&quot;, &quot;s&quot;: &quot;ext.vector_add(a, b)&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;cpp&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;vector_add(a, b)&quot;, &quot;s&quot;: &quot;C++ host 函数&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;chk&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;TORCH_CHECK&quot;, &quot;s&quot;: &quot;条件为假？&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;ok&quot;, &quot;c&quot;: 3.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;继续往下执行&quot;, &quot;s&quot;: &quot;检查通过&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;fail&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;torchCheckFail&quot;, &quot;s&quot;: &quot;拼消息，抛 c10::Error&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.1}, {&quot;id&quot;: &quot;pyb&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;pybind11&quot;, &quot;s&quot;: &quot;翻译 C++ 异常&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;err&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;RuntimeError&quot;, &quot;s&quot;: &quot;a must be float32&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;py&quot;, &quot;b&quot;: &quot;cpp&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;cpp&quot;, &quot;b&quot;: &quot;chk&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;chk&quot;, &quot;b&quot;: &quot;ok&quot;, &quot;t&quot;: &quot;否&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;chk&quot;, &quot;b&quot;: &quot;fail&quot;, &quot;t&quot;: &quot;是&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;fail&quot;, &quot;b&quot;: &quot;pyb&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;anim&quot;: true, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;pyb&quot;, &quot;b&quot;: &quot;err&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;anim&quot;: true, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 190.0, &quot;nw&quot;: 160.0}}"></div><figcaption>TORCH_CHECK 和 assert 不同：release 构建里照样生效，而且错误能完整地传回 Python，消息里还带着 C++ 的文件名和行号。</figcaption></figure>
+<h4>拆开这一行</h4>
+<ul>
+<li><strong><code>TORCH_CHECK(cond, msg...)</code></strong>：PyTorch 的断言宏。展开后大致是 <code>if (!(cond)) torchCheckFail(__func__, __FILE__, __LINE__, msg)</code>，见 <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/c10/util/Exception.h#L627" title="pytorch/pytorch @ fbab7cc · c10/util/Exception.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>Exception.h · TORCH_CHECK</a>。</li>
+<li><strong><code>(t).scalar_type()</code></strong>：返回张量的元素类型，类型是枚举 <code>ScalarType</code>，相当于 Python 的 <code>t.dtype</code>。定义见 <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/aten/src/ATen/core/TensorBase.h#L363" title="pytorch/pytorch @ fbab7cc · aten/src/ATen/core/TensorBase.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>TensorBase.h · scalar_type()</a>。</li>
+<li><strong><code>#t</code></strong>：预处理器的<strong>字符串化</strong>。<code>CHECK_F32_CUDA(bias)</code> 里的 <code>#t</code> 变成字面量 <code>&quot;bias&quot;</code>。</li>
+<li><strong><code>&quot;bias&quot; &quot; must be float32&quot;</code></strong>：相邻的两个字符串字面量会被编译器自动拼成一个，所以最终消息是 <code>&quot;bias must be float32&quot;</code>，直接告诉你是哪个参数出了问题。</li>
+</ul>
+<pre><code class="language-cpp">CHECK_F32_CUDA(bias);
+// 预处理之后，第三行变成：
+TORCH_CHECK((bias).scalar_type() == at::kFloat, &quot;bias&quot; &quot; must be float32&quot;);
+//                                              ^^^^^^ #t     ^^^^^^^^^^^^^^^^ 自动拼接
+</code></pre>
+<h4>at::kFloat 的来历</h4>
+<p><code>kFloat</code> 不是某个文件里手写的 <code>const</code>，而是用宏<strong>批量生成</strong>的，再经过两次 <code>using namespace</code> 才能写成 <code>at::kFloat</code>：</p>
+
+<figure class="flow"><div class="flow-head">at::kFloat 是怎么来的<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;at::kFloat 是怎么来的&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;enum&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;enum class ScalarType&quot;, &quot;s&quot;: &quot;Byte … Float … BFloat16&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.2}, {&quot;id&quot;: &quot;def&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 1.2, &quot;t&quot;: &quot;DEFINE_CONSTANT 宏&quot;, &quot;s&quot;: &quot;kFloat = ScalarType::Float&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.2}, {&quot;id&quot;: &quot;c10&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 2.4, &quot;t&quot;: &quot;c10::kFloat&quot;, &quot;s&quot;: &quot;真正定义在这里&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;at&quot;, &quot;c&quot;: 1.4, &quot;r&quot;: 2.4, &quot;t&quot;: &quot;at::kFloat&quot;, &quot;s&quot;: &quot;using namespace c10&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;torch&quot;, &quot;c&quot;: 2.8, &quot;r&quot;: 2.4, &quot;t&quot;: &quot;torch::kFloat&quot;, &quot;s&quot;: &quot;using namespace at&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;you&quot;, &quot;c&quot;: 1.4, &quot;r&quot;: 1.2, &quot;t&quot;: &quot;你的代码&quot;, &quot;s&quot;: &quot;== at::kFloat&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;enum&quot;, &quot;b&quot;: &quot;def&quot;, &quot;t&quot;: &quot;对每个类型展开一次&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;def&quot;, &quot;b&quot;: &quot;c10&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;c10&quot;, &quot;b&quot;: &quot;at&quot;, &quot;t&quot;: &quot;导入&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;at&quot;, &quot;b&quot;: &quot;torch&quot;, &quot;t&quot;: &quot;导入&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;at&quot;, &quot;b&quot;: &quot;you&quot;, &quot;t&quot;: &quot;查到&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 200.0, &quot;nw&quot;: 160.0}}"></div><figcaption>三个名字指向同一个常量。枚举在 torch/headeronly/core/ScalarType.h，k 前缀常量在 c10/core/ScalarType.h，at 导入 c10 在 torch/headeronly/macros/Macros.h，torch 导入 at 在 torch/types.h。</figcaption></figure>
+<p>对应源码（点开就是那一行）：</p>
+<ol>
+<li>枚举本体：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/torch/headeronly/core/ScalarType.h#L263" title="pytorch/pytorch @ fbab7cc · torch/headeronly/core/ScalarType.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>enum class ScalarType</a>；<code>Float</code> 是第 6 号，见 <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/torch/headeronly/core/ScalarType.h#L112" title="pytorch/pytorch @ fbab7cc · torch/headeronly/core/ScalarType.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>_(float, Float) /* 6 */</a></li>
+<li>生成 <code>k</code> 前缀常量：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/c10/core/ScalarType.h#L39-L43" title="pytorch/pytorch @ fbab7cc · c10/core/ScalarType.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>DEFINE_CONSTANT → constexpr kFloat</a>。<code>k##name</code> 是宏的<strong>拼接</strong>操作，<code>k</code> 和 <code>Float</code> 拼成 <code>kFloat</code></li>
+<li><code>at</code> 导入 <code>c10</code>：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/torch/headeronly/macros/Macros.h#L172-L174" title="pytorch/pytorch @ fbab7cc · torch/headeronly/macros/Macros.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>namespace at { using namespace c10; }</a></li>
+<li><code>torch</code> 导入 <code>at</code>：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/torch/csrc/api/include/torch/types.h#L36" title="pytorch/pytorch @ fbab7cc · torch/csrc/api/include/torch/types.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>namespace torch { using namespace at; }</a></li>
+</ol>
+<p>C++ 常量和 Python dtype 的对应：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>C++</th>
+<th>Python</th>
+<th>字节</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>at::kFloat</code></td>
+<td><code>torch.float32</code></td>
+<td>4</td>
+</tr>
+<tr>
+<td><code>at::kHalf</code></td>
+<td><code>torch.float16</code></td>
+<td>2</td>
+</tr>
+<tr>
+<td><code>at::kBFloat16</code></td>
+<td><code>torch.bfloat16</code></td>
+<td>2</td>
+</tr>
+<tr>
+<td><code>at::kDouble</code></td>
+<td><code>torch.float64</code></td>
+<td>8</td>
+</tr>
+<tr>
+<td><code>at::kInt</code> / <code>at::kLong</code></td>
+<td><code>torch.int32</code> / <code>torch.int64</code></td>
+<td>4 / 8</td>
+</tr>
+</tbody>
+</table></div>
+
+<div class="callout analogy"><div class="callout-title">类比 · 登机口查票</div><p><code>CHECK_F32_CUDA</code> 是登机口的工作人员：设备（是不是这趟航班）、连续性（座位号是不是连号）、dtype（是不是这个舱位的票）。查票只花一秒，但如果不查，乘客会被送到错误的城市，而且没人告诉他（kernel 静默地算出垃圾值）。<code>#t</code> 就是工作人员在广播里念出名字：“<strong>bias</strong> 旅客的票不对”，而不是只说“有人的票不对”。</p>
+</div>
+
+<details class="answer"><summary>自测：传一个 fp16 张量进来，报错信息是什么？</summary><div class="body"><p><code>a must be float32</code>（如果是第一个参数 <code>a</code>）。前两项检查都通过了（在 CUDA 上，也是连续的），第三项失败，<code>#t</code> 展开成 <code>&quot;a&quot;</code>。Python 端看到的是 <code>RuntimeError: a must be float32</code>。</p>
+</div></details>
+<h3 id="c1_elementwise-2">② blockDim.x 从哪来？为什么点不进去？</h3>
+<p class="q">你问的是 kernel 里的 <code>blockDim.x</code>：它也是 torch 头文件带进来的吗？为什么在编辑器里 click 不到定义？· <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/c1_elementwise.cu#L27" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/c1_elementwise.cu" target="_blank" rel="noopener"><span class="src-repo">drills</span>c1_elementwise.cu:27</a></p>
+<p><strong>不是 torch 带来的。</strong> <code>blockDim</code>、<code>threadIdx</code>、<code>blockIdx</code>、<code>gridDim</code>、<code>warpSize</code> 是 <strong>CUDA 语言自带的内置变量</strong>，由 nvcc 提供，你不需要 <code>#include</code> 任何东西。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>内置变量</th>
+<th>含义</th>
+<th>本文件里等于</th>
+<th>读的是哪个 PTX 特殊寄存器</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>threadIdx.x</code></td>
+<td>我在 block 里排第几</td>
+<td>0 … 255</td>
+<td><code>%tid.x</code></td>
+</tr>
+<tr>
+<td><code>blockIdx.x</code></td>
+<td>我的 block 在 grid 里排第几</td>
+<td>0 … blocks−1</td>
+<td><code>%ctaid.x</code></td>
+</tr>
+<tr>
+<td><code>blockDim.x</code></td>
+<td>每个 block 有几个线程</td>
+<td>256</td>
+<td><code>%ntid.x</code></td>
+</tr>
+<tr>
+<td><code>gridDim.x</code></td>
+<td>grid 有几个 block</td>
+<td><code>blocks</code></td>
+<td><code>%nctaid.x</code></td>
+</tr>
+</tbody>
+</table></div>
+
+<figure class="flow"><div class="flow-head">blockDim.x 的一生：从 &lt;&lt;&lt;&gt;&gt;&gt; 到寄存器<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;blockDim.x 的一生：从 &lt;&lt;&lt;&gt;&gt;&gt; 到寄存器&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;launch&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;&lt;&lt;&lt;blocks, 256&gt;&gt;&gt;&quot;, &quot;s&quot;: &quot;host 端的启动参数&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;hw&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;驱动 + 硬件&quot;, &quot;s&quot;: &quot;建 block 时写入 256&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;reg&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;特殊寄存器 %ntid.x&quot;, &quot;s&quot;: &quot;只读，值 = 256&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;hdr&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 1.4, &quot;t&quot;: &quot;device_launch_parameters.h&quot;, &quot;s&quot;: &quot;extern const dim3 blockDim&quot;, &quot;k&quot;: &quot;ghost&quot;, &quot;w&quot;: 1.25}, {&quot;id&quot;: &quot;kern&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 1.4, &quot;t&quot;: &quot;kernel 里的 blockDim.x&quot;, &quot;s&quot;: &quot;编译成 mov %ntid.x&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;launch&quot;, &quot;b&quot;: &quot;hw&quot;, &quot;t&quot;: &quot;启动&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;hw&quot;, &quot;b&quot;: &quot;reg&quot;, &quot;t&quot;: &quot;写入&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;hdr&quot;, &quot;b&quot;: &quot;kern&quot;, &quot;t&quot;: &quot;只提供名字（声明）&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: true}, {&quot;a&quot;: &quot;reg&quot;, &quot;b&quot;: &quot;kern&quot;, &quot;t&quot;: &quot;运行时读&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;anim&quot;: true, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 210.0, &quot;nw&quot;: 170.0}}"></div><figcaption>头文件里的 extern const 只是让编译器“认识这个名字”，它没有 C++ 实现：nvcc 把 blockDim.x 直接翻译成一条读特殊寄存器的指令，值由你 &lt;&lt;&lt;&gt;&gt;&gt; 里传的 256 决定。</figcaption></figure>
+<p>细节：</p>
+<ul>
+<li>nvcc 编译 <code>.cu</code> 时会<strong>隐式 include</strong> <code>cuda_runtime.h</code>，后者又 include 了 <code>device_launch_parameters.h</code>，里面声明了 <code>extern const dim3 blockDim;</code> 等几行。CUDA Toolkit 的头文件不在 GitHub 上，装好 Toolkit 后在 <code>$CUDA_HOME/include/device_launch_parameters.h</code>。</li>
+<li>clang 也能编 CUDA，它的同等定义是开源的，读起来最直观：<a class="src" href="https://github.com/llvm/llvm-project/blob/3c4aa885091c12572281a7117dd254907d8cd732/clang/lib/Headers/__clang_cuda_builtin_vars.h#L79-L83" title="llvm/llvm-project @ 3c4aa88 · clang/lib/Headers/__clang_cuda_builtin_vars.h" target="_blank" rel="noopener"><span class="src-repo">llvm</span>struct __cuda_builtin_blockDim_t</a>，每个分量 <code>x</code> 就是调用 <code>__nvvm_read_ptx_sreg_ntid_x()</code>，也就是读 <code>%ntid.x</code>；变量本身在 <a class="src" href="https://github.com/llvm/llvm-project/blob/3c4aa885091c12572281a7117dd254907d8cd732/clang/lib/Headers/__clang_cuda_builtin_vars.h#L109" title="llvm/llvm-project @ 3c4aa88 · clang/lib/Headers/__clang_cuda_builtin_vars.h" target="_blank" rel="noopener"><span class="src-repo">llvm</span>blockDim</a>，<a class="src" href="https://github.com/llvm/llvm-project/blob/3c4aa885091c12572281a7117dd254907d8cd732/clang/lib/Headers/__clang_cuda_builtin_vars.h#L115" title="llvm/llvm-project @ 3c4aa88 · clang/lib/Headers/__clang_cuda_builtin_vars.h" target="_blank" rel="noopener"><span class="src-repo">llvm</span>warpSize = 32</a>。</li>
+<li>官方文档：<a href="https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html#built-in-variables">CUDA Programming Guide · Built-in Variables</a>；PTX 寄存器：<a href="https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#special-registers-ntid">%ntid</a>、<a href="https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#special-registers-tid">%tid</a>、<a href="https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#special-registers-ctaid">%ctaid</a>。</li>
+</ul>
+<h4>为什么在 Mac 上点不进去</h4>
+
+<figure class="flow"><div class="flow-head">编辑器为什么找不到 blockDim<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;编辑器为什么找不到 blockDim&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;ide&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;编辑器 / clangd&quot;, &quot;s&quot;: &quot;打开 c1_elementwise.cu&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;cpp&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;当成普通 C++ 解析&quot;, &quot;s&quot;: &quot;不知道这是 CUDA&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;look&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;找 blockDim 的声明&quot;, &quot;s&quot;: &quot;没有隐式 include&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;miss&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;找不到&quot;, &quot;s&quot;: &quot;macOS 上没有 CUDA 头文件&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;fix&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;.clangd 配成 CUDA 模式&quot;, &quot;s&quot;: &quot;-xcuda -nocudainc …&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;clang&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;clang 自带的定义&quot;, &quot;s&quot;: &quot;__clang_cuda_builtin_vars.h&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;ide&quot;, &quot;b&quot;: &quot;cpp&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;cpp&quot;, &quot;b&quot;: &quot;look&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;look&quot;, &quot;b&quot;: &quot;miss&quot;, &quot;t&quot;: &quot;结果&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;fix&quot;, &quot;b&quot;: &quot;clang&quot;, &quot;t&quot;: &quot;能跳到&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 250.0, &quot;nw&quot;: 200.0}}"></div><figcaption>两层原因：NVIDIA 从 CUDA 10.2 起不再支持 macOS，本机根本没有这些头文件；编辑器默认也不会像 nvcc 那样做隐式 include。</figcaption></figure>
+<p>解决办法：在仓库根目录运行一次 <code>./setup_ide.sh</code>（之后在 VS Code 里 Reload Window）。它会：</p>
+<ul>
+<li>从 NVIDIA 官方的 pip wheel 里取出 CUDA 头文件，放到 <code>.refs/cuda/</code>；</li>
+<li>生成 <code>.clangd</code>，让 clangd 按 CUDA 模式解析 <code>.cu</code>，并加上 torch、CUDA、FlashInfer 的 include 路径；</li>
+<li>让 VS Code 用 clangd 代替 C/C++ 扩展的 IntelliSense。</li>
+</ul>
+<p>在这台 Mac 上验证过：<code>blockDim</code> 跳到 clang 的 <a class="src" href="https://github.com/llvm/llvm-project/blob/3c4aa885091c12572281a7117dd254907d8cd732/clang/lib/Headers/__clang_cuda_builtin_vars.h#L109" title="llvm/llvm-project @ 3c4aa88 · clang/lib/Headers/__clang_cuda_builtin_vars.h" target="_blank" rel="noopener"><span class="src-repo">llvm</span>__clang_cuda_builtin_vars.h</a>（本机是 <code>/Library/Developer/CommandLineTools/usr/lib/clang/16/include/</code> 下的同一个文件），<code>TORCH_CHECK</code>、<code>at::kFloat</code>、<code>getCurrentCUDAStream</code>、<code>C10_CUDA_KERNEL_LAUNCH_CHECK</code>、<code>atomicAdd</code> 都能跳到 torch / CUDA 头文件里的定义。在 Linux GPU 机器上用 Remote-SSH 打开项目也可以，那里有完整的 CUDA toolkit。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 工牌上印好的“本组人数”</div><p><code>blockDim.x</code> 不是你声明的变量，而像是公司发给每个员工的工牌上印着的一行字：“本组共 256 人”。组建团队的时候（kernel 启动），人事部（硬件）就把数字印上去了，员工只能读，不能改。你在代码里“找它的定义”，就像在公司规章里找“你工牌上的 256 是哪一条规定的”：答案不在规章里，而在组建团队的那张申请单（<code>&lt;&lt;&lt;blocks, 256&gt;&gt;&gt;</code>）上。</p>
+</div>
+<h3 id="c1_elementwise-3">③ at 是什么？at / c10 / torch 什么关系？</h3>
+<p class="q">你问的是 <code>at::kFloat</code>、<code>at::cuda::getCurrentCUDAStream()</code> 里的 <b>at</b> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/c1_elementwise.cu#L44" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/c1_elementwise.cu" target="_blank" rel="noopener"><span class="src-repo">drills</span>c1_elementwise.cu:44</a></p>
+<p><code>at</code> 是 <strong>ATen</strong>（“A Tensor Library”）的命名空间：PyTorch 底层的 C++ 张量库。PyTorch 的 C++ 部分分三层：</p>
+
+<figure class="flow"><div class="flow-head">PyTorch C++ 的三层命名空间<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;PyTorch C++ 的三层命名空间&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;torch&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;torch::&quot;, &quot;s&quot;: &quot;C++ 前端：nn、optim&quot;, &quot;k&quot;: &quot;teal&quot;, &quot;w&quot;: 1.2}, {&quot;id&quot;: &quot;at&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 1.2, &quot;t&quot;: &quot;at::（ATen）&quot;, &quot;s&quot;: &quot;Tensor + 几千个算子&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.2}, {&quot;id&quot;: &quot;c10&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 2.4, &quot;t&quot;: &quot;c10::&quot;, &quot;s&quot;: &quot;ScalarType、Device、异常&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.2}, {&quot;id&quot;: &quot;atc&quot;, &quot;c&quot;: 1.6, &quot;r&quot;: 1.2, &quot;t&quot;: &quot;at::cuda::&quot;, &quot;s&quot;: &quot;getCurrentCUDAStream …&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.2}, {&quot;id&quot;: &quot;c10c&quot;, &quot;c&quot;: 1.6, &quot;r&quot;: 2.4, &quot;t&quot;: &quot;c10::cuda::&quot;, &quot;s&quot;: &quot;CUDAStream、检查宏&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.2}], &quot;edges&quot;: [{&quot;a&quot;: &quot;torch&quot;, &quot;b&quot;: &quot;at&quot;, &quot;t&quot;: &quot;using namespace at&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;at&quot;, &quot;b&quot;: &quot;c10&quot;, &quot;t&quot;: &quot;using namespace c10&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;atc&quot;, &quot;b&quot;: &quot;c10c&quot;, &quot;t&quot;: &quot;using namespace c10::cuda&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 200.0, &quot;nw&quot;: 170.0}}"></div><figcaption>箭头是“导入”：上层能直接用下层的名字。所以 torch::Tensor 就是 at::Tensor，at::kFloat 就是 c10::kFloat，at::cuda::getCurrentCUDAStream 就是 c10::cuda::getCurrentCUDAStream。</figcaption></figure>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>命名空间</th>
+<th>名字来源</th>
+<th>放什么</th>
+<th>本文件里用到的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>c10</code></td>
+<td>“Caffe2” + “ATen” 的谐音（ca-ten → c-10）</td>
+<td>最底层的基础设施</td>
+<td><code>TORCH_CHECK</code>、<code>C10_CUDA_KERNEL_LAUNCH_CHECK</code>、<code>kFloat</code> 的真身</td>
+</tr>
+<tr>
+<td><code>at</code></td>
+<td>ATen</td>
+<td>张量和算子</td>
+<td><code>at::kFloat</code>、<code>at::cuda::getCurrentCUDAStream</code>、<code>at::cuda::getCurrentDeviceProperties</code></td>
+</tr>
+<tr>
+<td><code>torch</code></td>
+<td>C++ 前端</td>
+<td>面向用户的 API</td>
+<td><code>torch::Tensor</code>、<code>torch::empty_like</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>源码：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/torch/headeronly/macros/Macros.h#L172-L177" title="pytorch/pytorch @ fbab7cc · torch/headeronly/macros/Macros.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>at 导入 c10、at::cuda 导入 c10::cuda</a> · <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/torch/csrc/api/include/torch/types.h#L12-L36" title="pytorch/pytorch @ fbab7cc · torch/csrc/api/include/torch/types.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>torch 导入 at（附长注释解释为什么）</a> · 你 include 的 <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/torch/extension.h" title="pytorch/pytorch @ fbab7cc · torch/extension.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>torch/extension.h</a> 把这一切都带进来。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 一栋楼的三层</div><p>c10 是地下室的配电和水管（类型、设备、报错机制），at 是中间的工厂车间（张量和算子都在这里生产），torch 是一楼的门店（给顾客用的 nn、optim）。<code>using namespace</code> 相当于在楼上开了一个通往楼下的门：站在 at 层就能直接拿到 c10 的东西，所以 <code>at::kFloat</code> 和 <code>c10::kFloat</code> 是同一件货。写 kernel 的人习惯写 <code>at::</code>，因为我们干的就是车间里的活。</p>
+</div>
+<h3 id="c1_elementwise-4">④ vector_add：threads = 256 和 ceil 除法</h3>
+<p class="q">你问的是 <b>第 41–42 行</b>：<code>threads = 256</code> 和 <code>blocks = (n + threads - 1) / threads</code> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/c1_elementwise.cu#L33-L49" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/c1_elementwise.cu" target="_blank" rel="noopener"><span class="src-repo">drills</span>c1_elementwise.cu:33–49</a></p>
+<p>先看整个 host 函数做了什么。它跑在 CPU 上，自己不做加法，只负责把 GPU 上的活安排好：</p>
+
+<figure class="flow"><div class="flow-head">vector_add 这个 host 函数的流程<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;vector_add 这个 host 函数的流程&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;chk&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;CHECK_F32_CUDA ×2&quot;, &quot;s&quot;: &quot;设备、连续、dtype&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;alloc&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;empty_like(a)&quot;, &quot;s&quot;: &quot;分配 c，不清零&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;calc&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;算 launch 配置&quot;, &quot;s&quot;: &quot;threads, blocks&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;launch&quot;, &quot;c&quot;: 3.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;&lt;&lt;&lt;…, stream&gt;&gt;&gt;&quot;, &quot;s&quot;: &quot;排进队列，立刻返回&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;lchk&quot;, &quot;c&quot;: 4.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;LAUNCH_CHECK&quot;, &quot;s&quot;: &quot;cudaGetLastError()&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;gpu&quot;, &quot;c&quot;: 3.0, &quot;r&quot;: 1.4, &quot;t&quot;: &quot;GPU 稍后执行&quot;, &quot;s&quot;: &quot;c[i] = a[i] + b[i]&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;ret&quot;, &quot;c&quot;: 4.0, &quot;r&quot;: 1.4, &quot;t&quot;: &quot;return c&quot;, &quot;s&quot;: &quot;回到 Python&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;chk&quot;, &quot;b&quot;: &quot;alloc&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;alloc&quot;, &quot;b&quot;: &quot;calc&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;calc&quot;, &quot;b&quot;: &quot;launch&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;launch&quot;, &quot;b&quot;: &quot;lchk&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;launch&quot;, &quot;b&quot;: &quot;gpu&quot;, &quot;t&quot;: &quot;异步&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;anim&quot;: true, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;lchk&quot;, &quot;b&quot;: &quot;ret&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 200.0, &quot;nw&quot;: 168.0}}"></div><figcaption>kernel 启动是异步的：&lt;&lt;&lt;&gt;&gt;&gt; 只是把任务放进 stream 的队列，CPU 马上往下走。return c 的时候 GPU 可能还在算，但 c 后续的使用会排在同一个 stream 上，所以拿到的一定是算完的结果。</figcaption></figure>
+<h4>核心想法：一个线程负责一个元素</h4>
+<p>CUDA 不让你直接说“给我 n 个线程”，只能说“给我 <code>blocks</code> 个 block，每个 block <code>threads</code> 个线程”。所以要把 n 个元素按 256 个一组切开，算出要几组。</p>
+<p><strong><code>threads = 256</code>：每个 block 的线程数。</strong></p>
+<ul>
+<li><strong>必须是 32 的倍数。</strong> GPU 按 warp（32 个线程）调度。写 100 的话，硬件照样分配 4 个 warp = 128 个线程的位置，最后一个 warp 只有 4 个线程在干活。</li>
+<li><strong>上限 1024。</strong> 超过会让启动失败（下面的 <code>LAUNCH_CHECK</code> 就是为了抓这种错误）。</li>
+<li><strong>为什么是 256：</strong> 够大，一个 block 有 8 个 warp，SM 可以在它们之间切换来掩盖访存延迟；又不太大，一个 SM 可以同时驻留好几个 block。对逐元素 kernel，128 到 512 之间差别通常很小。</li>
+</ul>
+<p><strong><code>blocks = (n + threads - 1) / threads</code>：向上取整的整数除法。</strong></p>
+<p>整数除法 <code>n / threads</code> 是向下取整，会漏掉尾巴。先加上 <code>threads - 1</code> 再除，就变成 ⌈n / threads⌉。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>n</th>
+<th>n / 256（向下）</th>
+<th>(n + 255) / 256（向上）</th>
+<th>启动的线程数</th>
+<th>空转的线程</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>256</td>
+<td>1</td>
+<td>1</td>
+<td>256</td>
+<td>0</td>
+</tr>
+<tr>
+<td>257</td>
+<td>1，漏 1 个</td>
+<td><strong>2</strong></td>
+<td>512</td>
+<td>255</td>
+</tr>
+<tr>
+<td>1000</td>
+<td>3，漏 232 个</td>
+<td><strong>4</strong></td>
+<td>1024</td>
+<td>24</td>
+</tr>
+<tr>
+<td>1</td>
+<td>0，什么都没做</td>
+<td><strong>1</strong></td>
+<td>256</td>
+<td>255</td>
+</tr>
+</tbody>
+</table></div>
+<p>n = 1000 时，4 个 block 怎么覆盖这 1000 个元素：</p>
+
+<div class="strip-scroll"><div class="cells" style="grid-template-columns: 256fr 256fr 256fr 232fr minmax(30px, 24fr); min-width: 520px">
+<div class="c0">block 0<small>i = 0 … 255</small></div>
+<div class="c1">block 1<small>i = 256 … 511</small></div>
+<div class="c2">block 2<small>i = 512 … 767</small></div>
+<div class="c3">block 3<small>i = 768 … 999</small></div>
+<div class="cx">✗<small>24</small></div>
+</div></div>
+<p class="legend">block 3 的最后 24 个线程（i = 1000 … 1023）没有对应的元素，被 <code>if (i &lt; n)</code> 挡掉，什么都不做。</p>
+<p>所以 <code>blocks</code> 的计算和 kernel 里的边界检查是<strong>配套</strong>的：前者宁可多发线程也不能漏元素，后者把多发的线程挡掉。</p>
+<pre><code class="language-cpp">// kernel 里（第 27–29 行）
+int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;   // 全局编号
+if (i &lt; n) c[i] = a[i] + b[i];                                // 多出来的线程直接跳过
+// 例：block 3 的第 231 号线程：i = 3 * 256 + 231 = 999 &lt; 1000，干活
+//     block 3 的第 232 号线程：i = 3 * 256 + 232 = 1000，不满足，跳过
+</code></pre>
+<p><strong>为什么到处都是 <code>int64_t</code>？</strong> n 可能超过 2³¹（约 21 亿）。<code>blockIdx.x * blockDim.x</code> 两个都是 32 位无符号数，相乘会在 2³² 处回绕，所以第 27 行先把 <code>blockIdx.x</code> 转成 <code>int64_t</code> 再乘。</p>
+<h4>剩下几行</h4>
+<ul>
+<li><code>if (n == 0) return c;</code>：n = 0 时 blocks 会算出 0，而用 0 个 block 启动 kernel 是 CUDA 错误。</li>
+<li><code>at::cuda::getCurrentCUDAStream()</code>：拿 PyTorch 当前的 stream，让这个 kernel 和前后的 torch 操作按顺序执行。返回的 <code>CUDAStream</code> 能隐式转换成 <code>cudaStream_t</code>：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/c10/cuda/CUDAStream.h#L84" title="pytorch/pytorch @ fbab7cc · c10/cuda/CUDAStream.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>operator cudaStream_t()</a>，函数声明见 <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/c10/cuda/CUDAStream.h#L233" title="pytorch/pytorch @ fbab7cc · c10/cuda/CUDAStream.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>getCurrentCUDAStream</a>。</li>
+<li><code>&lt;&lt;&lt;blocks, threads, 0, stream&gt;&gt;&gt;</code>：四个参数依次是 grid 大小、block 大小、动态 shared memory 字节数（这里不用）、stream。见 <a href="https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/intro-to-cuda-cpp.html#launching-kernels">Programming Guide · Launching Kernels</a>。</li>
+<li><code>C10_CUDA_KERNEL_LAUNCH_CHECK()</code>：<code>&lt;&lt;&lt;&gt;&gt;&gt;</code> 本身不返回错误。这个宏立刻调用 <code>cudaGetLastError()</code>，把非法的启动配置（例如 threads &gt; 1024）当场报出来：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/c10/cuda/CUDAException.h#L85" title="pytorch/pytorch @ fbab7cc · c10/cuda/CUDAException.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>C10_CUDA_KERNEL_LAUNCH_CHECK</a>。它抓不到 kernel <strong>运行中</strong>的错误（比如越界访问），那些要等之后同步时才会暴露。</li>
+</ul>
+
+<div class="callout analogy"><div class="callout-title">类比 · 坐大巴</div><p>1000 个人去春游，每辆大巴 256 个座位。1000 / 256 = 3.9，向下取整订 3 辆车会落下 232 个人，所以必须订 4 辆（向上取整）。第 4 辆车有 24 个空座：这就是 <code>if (i &lt; n)</code>，没有乘客的座位什么都不做。为什么座位数是 256 而不是 250？因为大巴按 32 座一排造（warp），订 250 座的车，最后一排照样占着一整排的位置。</p>
+</div>
+
+<details class="answer"><summary>自测：n = 513，blocks 是多少？会有几个线程空转？</summary><div class="body"><p>(513 + 255) / 256 = 768 / 256 = 3。启动 3 × 256 = 768 个线程，768 − 513 = 255 个空转。</p>
+</div></details>
+<h3 id="c1_elementwise-5">⑤ <code>__device__ __forceinline__</code> 是什么意思？</h3>
+<p class="q">你问的是 <b>第 54 行</b>：<code>__device__ __forceinline__ float gelu_tanh(float x)</code> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/c1_elementwise.cu#L54-L58" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/c1_elementwise.cu" target="_blank" rel="noopener"><span class="src-repo">drills</span>c1_elementwise.cu:54–58</a></p>
+<p>两个修饰词各管一件事：<code>__device__</code> 说“这个函数在 GPU 上运行，给 kernel 调用”；<code>__forceinline__</code> 说“别生成函数调用，把函数体直接贴到调用处”。</p>
+<h4><code>__device__</code>：执行空间</h4>
+
+<figure class="flow"><div class="flow-head">本文件里三种函数分别跑在哪<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;本文件里三种函数分别跑在哪&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;host&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;bias_gelu(x, bias)&quot;, &quot;s&quot;: &quot;__host__（默认）· CPU&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;kern&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;bias_gelu_kernel&quot;, &quot;s&quot;: &quot;__global__ · GPU 入口&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;dev&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;gelu_tanh(x)&quot;, &quot;s&quot;: &quot;__device__ · GPU 辅助&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;inl&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 1.4, &quot;t&quot;: &quot;内联之后&quot;, &quot;s&quot;: &quot;函数体嵌进 kernel&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;host&quot;, &quot;b&quot;: &quot;kern&quot;, &quot;t&quot;: &quot;&lt;&lt;&lt;&gt;&gt;&gt;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;kern&quot;, &quot;b&quot;: &quot;dev&quot;, &quot;t&quot;: &quot;普通调用&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;dev&quot;, &quot;b&quot;: &quot;inl&quot;, &quot;t&quot;: &quot;__forceinline__&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;anim&quot;: false, &quot;dash&quot;: true}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 290.0, &quot;nw&quot;: 200.0}}"></div><figcaption>CPU 不能直接调 <code>__device__</code> 函数，kernel 也不能用普通调用语法去调另一个 <code>__global__</code>。<code>__global__</code> 必须返回 void，<code>__device__</code> 可以有返回值（这里返回 float）。</figcaption></figure>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>限定符</th>
+<th>在哪运行</th>
+<th>谁能调用</th>
+<th>例子</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__global__</code></td>
+<td>GPU</td>
+<td>CPU 用 <code>&lt;&lt;&lt;&gt;&gt;&gt;</code> 启动</td>
+<td><code>bias_gelu_kernel</code>（第 63 行）</td>
+</tr>
+<tr>
+<td><code>__device__</code></td>
+<td>GPU</td>
+<td>只有 GPU 代码</td>
+<td><code>gelu_tanh</code>（第 54 行）</td>
+</tr>
+<tr>
+<td><code>__host__</code>（不写就是它）</td>
+<td>CPU</td>
+<td>CPU</td>
+<td><code>bias_gelu</code>（第 75 行）</td>
+</tr>
+</tbody>
+</table></div>
+<p>如果把 <code>__device__</code> 删掉，<code>gelu_tanh</code> 就成了普通 CPU 函数，kernel 里调用它会直接编译报错。</p>
+<h4><code>__forceinline__</code>：强制内联</h4>
+<p>内联之后，第 71 行在编译器眼里相当于：</p>
+<pre><code class="language-cpp">float v = x[i] + bias[i % cols];
+y[i] = 0.5f * v * (1.0f + tanhf(0.7978845608028654f * (v + 0.044715f * v * v * v)));
+</code></pre>
+<p>为什么在 GPU 上这很重要：</p>
+<ul>
+<li><strong>省掉调用开销。</strong> GPU 上真正的函数调用要按调用约定传参、保存寄存器，可能还要用栈，而栈放在 local memory 里，很慢。对只有几条算术指令的函数，这些开销可能比函数本身还大。</li>
+<li><strong>让编译器继续优化。</strong> 展开以后，编译器能把它和周围代码一起分配寄存器、重排指令、合并成 FMA（乘加）。</li>
+</ul>
+<p>nvcc 默认就会积极内联小的 <code>__device__</code> 函数，<code>__forceinline__</code> 是把“大概率内联”变成“一定内联”，也写明了作者的意图。反过来的 <code>__noinline__</code> 用于很大的函数，避免代码膨胀。文档：<a href="https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html#execution-space-specifiers">Execution Space Specifiers</a> · <a href="https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html#inline-specifiers">Inline Specifiers</a>。</p>
+<p>对照 PyTorch 自己的实现：<code>F.gelu(approximate=&quot;tanh&quot;)</code> 的 CUDA kernel 用的是同一个公式，<code>kBeta</code> 就是这里的 <code>k0 = sqrt(2/π)</code>，<code>kKappa</code> 就是 <code>k1 = 0.044715</code>：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/aten/src/ATen/native/cuda/ActivationGeluKernel.cu#L26-L30" title="pytorch/pytorch @ fbab7cc · aten/src/ATen/native/cuda/ActivationGeluKernel.cu" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>ActivationGeluKernel.cu · tanh GELU</a>。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 抄菜谱 vs 打电话问</div><p>厨师（kernel）做菜做到一半需要调一个酱汁（gelu_tanh）。不内联就像每做一份都放下手里的活，打电话问酱汁大师傅怎么调，听完再回来接着做（保存现场、跳转、返回）。内联就是把酱汁的配方直接抄进自己的菜谱里，一气呵成。配方只有三行时，打电话的时间比调酱汁还长，当然应该抄进来。<code>__device__</code> 则说明这本菜谱只在后厨（GPU）用，前台（CPU）拿到也看不懂。</p>
+</div>
+<h3 id="c1_elementwise-6">⑥ grid-stride loop：一个线程处理好几个元素</h3>
+<p class="q">你问的是 <b>第 68–72 行</b>的 for 循环 · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/c1_elementwise.cu#L68-L72" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/c1_elementwise.cu" target="_blank" rel="noopener"><span class="src-repo">drills</span>c1_elementwise.cu:68–72</a></p>
+<pre><code class="language-cpp">const int64_t stride = (int64_t)blockDim.x * gridDim.x;      // 整个 grid 的线程总数
+for (int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x; i &lt; total; i += stride) {
+  y[i] = gelu_tanh(x[i] + bias[i % cols]);
+}
+</code></pre>
+<p>和 vector_add 的区别：vector_add 启动“刚好够”的线程，每个线程只做一次；这里 block 数<strong>有上限</strong>（见第 ⑦ 节），线程可能比元素少，所以每个线程<strong>循环</strong>：做完一个元素，往后跳 <code>stride</code> 个再做一个。</p>
+<ul>
+<li><code>stride = blockDim.x * gridDim.x</code> = 每个 block 的线程数 × block 数 = <strong>整个 grid 的线程总数</strong></li>
+<li>起点 <code>i</code> 和 vector_add 一样，是这个线程的全局编号</li>
+<li><code>i &lt; total</code> 同时是边界检查</li>
+</ul>
+<h4>小数字走一遍：2 个 block × 4 个线程，total = 20</h4>
+<p>stride = 4 × 2 = 8。颜色表示 block，格子里写的是元素下标和处理它的线程（全局编号 g）：</p>
+
+<div class="strip-scroll"><div class="cells" style="grid-template-columns: 64px repeat(8, minmax(44px, 1fr)); min-width: 470px">
+<div class="lbl">第 1 轮</div>
+<div class="c0">0<small>g0</small></div><div class="c0">1<small>g1</small></div><div class="c0">2<small>g2</small></div><div class="c0">3<small>g3</small></div>
+<div class="c1">4<small>g4</small></div><div class="c1">5<small>g5</small></div><div class="c1">6<small>g6</small></div><div class="c1">7<small>g7</small></div>
+<div class="lbl">第 2 轮</div>
+<div class="c0">8<small>g0</small></div><div class="c0">9<small>g1</small></div><div class="c0">10<small>g2</small></div><div class="c0">11<small>g3</small></div>
+<div class="c1">12<small>g4</small></div><div class="c1">13<small>g5</small></div><div class="c1">14<small>g6</small></div><div class="c1">15<small>g7</small></div>
+<div class="lbl">第 3 轮</div>
+<div class="c0">16<small>g0</small></div><div class="c0">17<small>g1</small></div><div class="c0">18<small>g2</small></div><div class="c0">19<small>g3</small></div>
+<div class="cx">20<small>退出</small></div><div class="cx">21<small>退出</small></div><div class="cx">22<small>退出</small></div><div class="cx">23<small>退出</small></div>
+</div></div>
+<p class="legend"><span class="c0"></span>block 0（g0–g3）<span class="c1"></span>block 1（g4–g7）<span class="cx"></span>i ≥ total，循环结束</p>
+<ul>
+<li>线程 g0 处理 0 → 8 → 16，下一个是 24，退出</li>
+<li>线程 g5 处理 5 → 13，下一个是 21，不满足 <code>21 &lt; 20</code>，退出</li>
+</ul>
+<p>整个 grid 像一把梳子，每轮整体往前平移 stride 个元素，直到扫完数组。</p>
+<h4>为什么跨步，而不是每个线程分一段连续的？</h4>
+<p>另一种直觉是“线程 0 做 0–2，线程 1 做 3–5……”。这样性能很差，原因是<strong>合并访存（coalescing）</strong>。</p>
+
+<figure class="flow"><div class="flow-head">同一个 warp、同一条 load 指令，两种分法<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;同一个 warp、同一条 load 指令，两种分法&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;warp&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.6, &quot;t&quot;: &quot;1 个 warp 的 32 个线程&quot;, &quot;s&quot;: &quot;同时执行同一条 load&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.1}, {&quot;id&quot;: &quot;good&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;grid-stride&quot;, &quot;s&quot;: &quot;地址 i, i+1, …, i+31&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;bad&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 1.2, &quot;t&quot;: &quot;每线程一段&quot;, &quot;s&quot;: &quot;地址相隔一整段&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;t1&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;4 个 32B sector&quot;, &quot;s&quot;: &quot;= 1 条 128B cache line&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;t2&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 1.2, &quot;t&quot;: &quot;最多 32 个 sector&quot;, &quot;s&quot;: &quot;每个只用 4B，浪费 7/8&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;warp&quot;, &quot;b&quot;: &quot;good&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;warp&quot;, &quot;b&quot;: &quot;bad&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;good&quot;, &quot;b&quot;: &quot;t1&quot;, &quot;t&quot;: &quot;连续 128B&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;anim&quot;: true, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;bad&quot;, &quot;b&quot;: &quot;t2&quot;, &quot;t&quot;: &quot;分散&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;anim&quot;: true, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 250.0, &quot;nw&quot;: 170.0}}"></div><figcaption>显存按 32 字节的 sector 搬运。32 个相邻的 float 正好是连续的 128 字节，一次就搬完；如果 32 个线程各读一个分散的地址，每个 sector 只用到 4 字节。</figcaption></figure>
+<p>关键点：grid-stride 是在<strong>同一个线程的不同轮次之间</strong>跨步；<strong>同一轮里，相邻线程读的永远是相邻地址</strong>。延伸阅读：<a href="https://developer.nvidia.com/blog/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/">NVIDIA blog · Grid-Stride Loops</a> · <a href="https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/writing-cuda-kernels.html#coalesced-global-memory-access">Programming Guide · Coalesced Global Memory Access</a>。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 发牌，而不是切牌</div><p>8 个人打牌，荷官发 20 张牌：一人一张、转一圈，再一人一张……这就是 grid-stride：第 0 个人拿到第 0、8、16 张。另一种做法是把牌切成 8 叠，每人拿一叠连续的，这就是“每线程一段”。
+为什么发牌更快？想象牌在一条传送带上，每一轮 8 个人<strong>同时</strong>伸手，正好拿走传送带上<strong>挨着的 8 张</strong>，一次抓取就够了（合并访存）。切牌的话，8 个人同时伸手去抓 8 个相隔很远的位置，传送带要停 8 次。</p>
+</div>
+<h3 id="c1_elementwise-7">⑦ block 数上限 sms × 32 在哪里？为什么要限？</h3>
+<p class="q">你问的是“为什么要限制 block 数（sms × 32），我没看到”：它在 host 函数 <code>bias_gelu</code> 里，<b>第 84–88 行</b> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/c1_elementwise.cu#L84-L88" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/c1_elementwise.cu" target="_blank" rel="noopener"><span class="src-repo">drills</span>c1_elementwise.cu:84–88</a></p>
+<pre><code class="language-cpp">const int threads = 256;
+const int sms = at::cuda::getCurrentDeviceProperties()-&gt;multiProcessorCount;
+const int64_t blocks = std::min&lt;int64_t&gt;((total + threads - 1) / threads, (int64_t)sms * 32);
+</code></pre>
+<p>kernel 里看不到，是因为 <strong>kernel 不决定启动多少个 block</strong>。block 数是 host 端在 <code>&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;</code> 里传进去的，kernel 只能通过 <code>gridDim.x</code> 读到它。</p>
+
+<figure class="flow"><div class="flow-head">block 数怎么算出来，又怎么变成 kernel 里的 stride<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;block 数怎么算出来，又怎么变成 kernel 里的 stride&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;total&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;total 个元素&quot;, &quot;s&quot;: &quot;x.numel()&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;need&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;ceil(total / 256)&quot;, &quot;s&quot;: &quot;一线程一元素要的 block&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.3}, {&quot;id&quot;: &quot;cap&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;sms × 32&quot;, &quot;s&quot;: &quot;RTX 5090：170 × 32&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.3}, {&quot;id&quot;: &quot;min&quot;, &quot;c&quot;: 2.35, &quot;r&quot;: 0.65, &quot;t&quot;: &quot;std::min&quot;, &quot;s&quot;: &quot;取较小者 = blocks&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;grid&quot;, &quot;c&quot;: 3.4, &quot;r&quot;: 0.65, &quot;t&quot;: &quot;&lt;&lt;&lt;blocks, 256&gt;&gt;&gt;&quot;, &quot;s&quot;: &quot;kernel 里是 gridDim.x&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.1}, {&quot;id&quot;: &quot;stride&quot;, &quot;c&quot;: 3.4, &quot;r&quot;: 2.0, &quot;t&quot;: &quot;stride&quot;, &quot;s&quot;: &quot;256 × gridDim.x&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.1}], &quot;edges&quot;: [{&quot;a&quot;: &quot;total&quot;, &quot;b&quot;: &quot;need&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;need&quot;, &quot;b&quot;: &quot;min&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;cap&quot;, &quot;b&quot;: &quot;min&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;min&quot;, &quot;b&quot;: &quot;grid&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;grid&quot;, &quot;b&quot;: &quot;stride&quot;, &quot;t&quot;: &quot;kernel 内读取&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 200.0, &quot;nw&quot;: 160.0}}"></div><figcaption>host 端封顶 block 数，kernel 端必须用 grid-stride 循环把剩下的元素扫完。两边必须配套：如果 kernel 还是 vector_add 那种只做一次的写法，超出线程总数的元素就没人处理了。</figcaption></figure>
+<ul>
+<li><code>getCurrentDeviceProperties()</code> 返回当前 GPU 的 <code>cudaDeviceProp</code>，<code>multiProcessorCount</code> 是 SM（流式多处理器）个数。源码：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/aten/src/ATen/cuda/CUDAContextLight.h#L72" title="pytorch/pytorch @ fbab7cc · aten/src/ATen/cuda/CUDAContextLight.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>getCurrentDeviceProperties</a>。</li>
+<li>常见 GPU 的 SM 数：A100 是 108，H100 SXM 是 132，RTX 5090（本仓库实测用的卡）是 170。</li>
+</ul>
+<h4>用 RTX 5090 算几个例子</h4>
+<p>sms × 32 = 170 × 32 = 5440 个 block，stride = 5440 × 256 = 1,392,640。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>total</th>
+<th>ceil(total / 256)</th>
+<th>blocks（取 min）</th>
+<th>每个线程最多循环几轮</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>100,000</td>
+<td>391</td>
+<td>391</td>
+<td>1（和 vector_add 完全一样）</td>
+</tr>
+<tr>
+<td>1,000,000</td>
+<td>3,907</td>
+<td>3,907</td>
+<td>1</td>
+</tr>
+<tr>
+<td>10,000,000</td>
+<td>39,063</td>
+<td><strong>5,440</strong>（封顶）</td>
+<td>8</td>
+</tr>
+<tr>
+<td>1,000,000,000</td>
+<td>3,906,250</td>
+<td><strong>5,440</strong>（封顶）</td>
+<td>719</td>
+</tr>
+</tbody>
+</table></div>
+<p>（轮数 = ⌈total / stride⌉，例如 10⁷ / 1,392,640 ≈ 7.2，所以最多 8 轮。）</p>
+<h4>为什么要封顶</h4>
+<ul>
+<li><strong>数据少时没区别。</strong> <code>min</code> 取的是 ceil(total/256)，每个线程只循环一次。</li>
+<li><strong>数据多时少调度开销。</strong> 与其发几百万个只干一点活就退出的 block，不如让数量合适的 block 常驻在 SM 上循环干活。每个 SM 32 个 block，足够让所有 SM 都忙起来，并有足够多的 warp 轮换来掩盖访存延迟。</li>
+<li><strong>一个 kernel 适配任意大小。</strong> 不管 total 多大，grid 大小都是有限的。</li>
+</ul>
+
+<div class="callout analogy"><div class="callout-title">类比 · 按桌子雇服务员，不按客人数</div><p>餐厅里来了 10,000 位客人。你不会雇 10,000 个服务员，每人服务一位就下班（每个 block 只干一点活），光是招人和交接就累死。合理的做法是按桌子数（SM 数）雇人，比如每张桌子配 32 个服务员，每个服务员轮流服务很多位客人（grid-stride 循环）。客人很少的时候，来几位就派几位服务员，和原来没区别。</p>
+</div>
+<h3 id="c1_elementwise-8">⑧ bias[i % cols]：扁平下标怎么找到列号</h3>
+<p class="q">你问的是 <b>第 70–71 行</b>：<code>y[i] = gelu_tanh(x[i] + bias[i % cols]);</code> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/c1_elementwise.cu#L70-L71" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/c1_elementwise.cu" target="_blank" rel="noopener"><span class="src-repo">drills</span>c1_elementwise.cu:70–71</a></p>
+<p>这一行等价于 PyTorch 的：</p>
+<pre><code class="language-python">y = F.gelu(x + bias, approximate=&quot;tanh&quot;)   # x: [rows, cols], bias: [cols]
+</code></pre>
+<p>关键是 <code>x + bias</code> 的<strong>广播</strong>：bias 只有一行，要加到 x 的<strong>每一行</strong>上。可 kernel 里没有“行”和“列”，只有一个扁平下标 <code>i</code>，所以要用 <code>i % cols</code> 算出当前元素在哪一列。</p>
+<h4>第一步：二维张量在显存里是一条一维数组</h4>
+<p>设 rows = 3，cols = 4。颜色表示<strong>列</strong>：</p>
+
+<p class="legend">逻辑上的二维 x（3 行 × 4 列）和 bias（4 个数）：</p>
+<div class="strip-scroll"><div class="cells" style="grid-template-columns: 56px repeat(4, minmax(52px, 1fr)); max-width: 420px">
+<div class="lbl"></div><div class="lbl" style="text-align:center">列 0</div><div class="lbl" style="text-align:center">列 1</div><div class="lbl" style="text-align:center">列 2</div><div class="lbl" style="text-align:center">列 3</div>
+<div class="lbl">行 0</div><div class="c0">x00</div><div class="c1">x01</div><div class="c2">x02</div><div class="c3">x03</div>
+<div class="lbl">行 1</div><div class="c0">x10</div><div class="c1">x11</div><div class="c2">x12</div><div class="c3">x13</div>
+<div class="lbl">行 2</div><div class="c0">x20</div><div class="c1">x21</div><div class="c2">x22</div><div class="c3">x23</div>
+<div class="lbl">bias</div><div class="c0">b0</div><div class="c1">b1</div><div class="c2">b2</div><div class="c3">b3</div>
+</div></div>
+<p class="legend">显存里实际的样子（行优先：先存完第 0 行，再存第 1 行……）：</p>
+<div class="strip-scroll"><div class="cells" style="grid-template-columns: 74px repeat(12, minmax(40px, 1fr)); min-width: 600px">
+<div class="lbl">i</div><div>0</div><div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div><div>7</div><div>8</div><div>9</div><div>10</div><div>11</div>
+<div class="lbl">x[i]</div><div class="c0">x00</div><div class="c1">x01</div><div class="c2">x02</div><div class="c3">x03</div><div class="c0">x10</div><div class="c1">x11</div><div class="c2">x12</div><div class="c3">x13</div><div class="c0">x20</div><div class="c1">x21</div><div class="c2">x22</div><div class="c3">x23</div>
+<div class="lbl">i % 4</div><div>0</div><div>1</div><div>2</div><div>3</div><div>0</div><div>1</div><div>2</div><div>3</div><div>0</div><div>1</div><div>2</div><div>3</div>
+<div class="lbl">bias[i%4]</div><div class="c0">b0</div><div class="c1">b1</div><div class="c2">b2</div><div class="c3">b3</div><div class="c0">b0</div><div class="c1">b1</div><div class="c2">b2</div><div class="c3">b3</div><div class="c0">b0</div><div class="c1">b1</div><div class="c2">b2</div><div class="c3">b3</div>
+</div></div>
+<p class="legend">x[i] 和 bias[i % 4] 的颜色每一格都对得上：每到新的一行，i % cols 就回到 0，bias 从头再读一遍。这就是广播。</p>
+<h4>第二步：从 i 反推行号和列号</h4>
+<p>每行有 <code>cols</code> 个元素，所以<strong>行号 = <code>i / cols</code></strong>（前面有几个完整的行），<strong>列号 = <code>i % cols</code></strong>（在当前行里排第几）。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>i</th>
+<th>i / 4（行）</th>
+<th>i % 4（列）</th>
+<th>元素</th>
+<th>加的 bias</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>x00</td>
+<td>b0</td>
+</tr>
+<tr>
+<td>3</td>
+<td>0</td>
+<td>3</td>
+<td>x03</td>
+<td>b3</td>
+</tr>
+<tr>
+<td>4</td>
+<td>1</td>
+<td><strong>0</strong></td>
+<td>x10</td>
+<td><strong>b0</strong>，换行后列号回到 0</td>
+</tr>
+<tr>
+<td>6</td>
+<td>1</td>
+<td>2</td>
+<td>x12</td>
+<td>b2</td>
+</tr>
+<tr>
+<td>11</td>
+<td>2</td>
+<td>3</td>
+<td>x23</td>
+<td>b3</td>
+</tr>
+</tbody>
+</table></div>
+<p>只需要列号，所以代码里没有算行号。</p>
+<h4>第三步：这一行按顺序做了什么，以及“融合”省在哪</h4>
+<ol>
+<li>读 <code>x[i]</code>（显存）</li>
+<li>读 <code>bias[i % cols]</code>（几乎总是命中缓存，见下）</li>
+<li>相加，结果在寄存器里</li>
+<li><code>gelu_tanh</code>，结果还在寄存器里</li>
+<li>写 <code>y[i]</code>（显存）</li>
+</ol>
+
+<figure class="flow"><div class="flow-head">未融合 vs 融合：数据进出显存几次<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;未融合 vs 融合：数据进出显存几次&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;x1&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;x&quot;, &quot;s&quot;: &quot;显存&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;k1&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;kernel 1&quot;, &quot;s&quot;: &quot;t = x + bias&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;t&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;t&quot;, &quot;s&quot;: &quot;显存里的中间结果&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;k2&quot;, &quot;c&quot;: 3.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;kernel 2&quot;, &quot;s&quot;: &quot;y = gelu(t)&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;y1&quot;, &quot;c&quot;: 4.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;y&quot;, &quot;s&quot;: &quot;显存&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;x2&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 1.5, &quot;t&quot;: &quot;x&quot;, &quot;s&quot;: &quot;显存&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;kf&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 1.5, &quot;t&quot;: &quot;融合 kernel&quot;, &quot;s&quot;: &quot;+ 和 GELU 都在寄存器&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.15}, {&quot;id&quot;: &quot;y2&quot;, &quot;c&quot;: 4.0, &quot;r&quot;: 1.5, &quot;t&quot;: &quot;y&quot;, &quot;s&quot;: &quot;显存&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;x1&quot;, &quot;b&quot;: &quot;k1&quot;, &quot;t&quot;: &quot;读&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;k1&quot;, &quot;b&quot;: &quot;t&quot;, &quot;t&quot;: &quot;写&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;t&quot;, &quot;b&quot;: &quot;k2&quot;, &quot;t&quot;: &quot;读&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;k2&quot;, &quot;b&quot;: &quot;y1&quot;, &quot;t&quot;: &quot;写&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;x2&quot;, &quot;b&quot;: &quot;kf&quot;, &quot;t&quot;: &quot;读&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;kf&quot;, &quot;b&quot;: &quot;y2&quot;, &quot;t&quot;: &quot;写&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [{&quot;c0&quot;: 0.0, &quot;r0&quot;: 0.0, &quot;c1&quot;: 4.0, &quot;r1&quot;: 0.0, &quot;t&quot;: &quot;未融合：读 x、写 t、读 t、写 y = 4 次&quot;, &quot;k&quot;: &quot;todo&quot;}, {&quot;c0&quot;: 0.0, &quot;r0&quot;: 1.5, &quot;c1&quot;: 4.0, &quot;r1&quot;: 1.5, &quot;t&quot;: &quot;融合：读 x、写 y = 2 次&quot;, &quot;k&quot;: &quot;pass&quot;}], &quot;cfg&quot;: {&quot;cw&quot;: 180.0, &quot;nw&quot;: 150.0}}"></div><figcaption>逐元素运算的瓶颈是显存带宽，不是算力。显存流量减半，速度就接近翻倍。中间结果 t 从来没有写进显存，这就是 fusion 省下的东西。</figcaption></figure>
+<p><strong>为什么注释说 bias “stays in L1/L2”：</strong> x 的每个元素只读一次，实打实地消耗显存带宽；bias 很小（cols = 4096 时只有 16 KB），却被每一行重复读一遍。第一次读之后它就留在缓存里（L2 有几十 MB），之后几乎全部命中，不占显存带宽。所以这个 kernel 的显存流量就是读 x 一次加写 y 一次。</p>
+<p><strong>一个小代价：</strong> <code>%</code> 是 64 位整数取模，GPU 上要用几十条指令模拟。这个 kernel 受访存限制，取模的时间通常被访存延迟掩盖掉。想进一步优化，可以改成二维 grid，让 block 直接按行列索引，就不需要取模了。</p>
+<p><strong>前提：x 必须是连续的。</strong> “列号 = i % cols”只在 x 真的是紧密的行优先布局时成立。传一个 <code>x.t()</code> 进来，逻辑形状没变，内存顺序却变了，算出的列号就错了，而且不会报错。这正是第 ① 节里 <code>is_contiguous()</code> 检查存在的原因。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 日历和每周课表</div><p>把一年的日子从 0 开始编号：第 i 天。不管过了多少周，“今天星期几”就是 <code>i % 7</code>。bias 就像一张每周固定的课表：周一体育、周二美术……第 i 天上什么课 = <code>课表[i % 7]</code>。x 是 365 天的日历（按周一行排开，行优先），你不需要知道今天是第几周（行号），只需要知道星期几（列号），就能查到当天的课。</p>
+</div>
+
+<details class="answer"><summary>自测：cols = 4096，i = 10,000，这个元素在哪一行哪一列？加的是 bias 的第几个？</summary><div class="body"><p>行 = 10000 / 4096 = 2，列 = 10000 % 4096 = 10000 − 8192 = 1808。所以是第 2 行第 1808 列，加的是 <code>bias[1808]</code>。</p>
+</div></details>
+<h3 id="c1_elementwise-9">源码与资料索引</h3>
+<p><strong>本仓库</strong>：<a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/c1_elementwise.cu" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/c1_elementwise.cu" target="_blank" rel="noopener"><span class="src-repo">drills</span>solutions/c1_elementwise.cu</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/mine/c1_elementwise.cu" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · mine/c1_elementwise.cu" target="_blank" rel="noopener"><span class="src-repo">drills</span>mine/c1_elementwise.cu（你写的）</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/d5837601244882cdca2db2ecee4e1bf571ef37b0/content/c1.md" title="kzhou003/gpu-kernel-drills @ d583760 · content/c1.md" target="_blank" rel="noopener"><span class="src-repo">drills</span>content/c1.md（题目页）</a></p>
+<p><strong>PyTorch（钉在固定 commit）</strong></p>
+<ul>
+<li>检查与报错：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/c10/util/Exception.h#L627" title="pytorch/pytorch @ fbab7cc · c10/util/Exception.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>TORCH_CHECK</a> · <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/c10/cuda/CUDAException.h#L39" title="pytorch/pytorch @ fbab7cc · c10/cuda/CUDAException.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>C10_CUDA_CHECK</a> · <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/c10/cuda/CUDAException.h#L85" title="pytorch/pytorch @ fbab7cc · c10/cuda/CUDAException.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>C10_CUDA_KERNEL_LAUNCH_CHECK</a></li>
+<li>dtype：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/torch/headeronly/core/ScalarType.h#L263" title="pytorch/pytorch @ fbab7cc · torch/headeronly/core/ScalarType.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>enum ScalarType</a> · <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/c10/core/ScalarType.h#L39-L43" title="pytorch/pytorch @ fbab7cc · c10/core/ScalarType.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>kFloat 等常量</a></li>
+<li>命名空间：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/torch/headeronly/macros/Macros.h#L172-L177" title="pytorch/pytorch @ fbab7cc · torch/headeronly/macros/Macros.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>at ← c10</a> · <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/torch/csrc/api/include/torch/types.h#L36" title="pytorch/pytorch @ fbab7cc · torch/csrc/api/include/torch/types.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>torch ← at</a></li>
+<li>Tensor 方法：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/aten/src/ATen/core/TensorBase.h#L455" title="pytorch/pytorch @ fbab7cc · aten/src/ATen/core/TensorBase.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>is_cuda</a> · <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/aten/src/ATen/core/TensorBase.h#L268" title="pytorch/pytorch @ fbab7cc · aten/src/ATen/core/TensorBase.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>is_contiguous</a> · <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/aten/src/ATen/core/TensorBase.h#L337" title="pytorch/pytorch @ fbab7cc · aten/src/ATen/core/TensorBase.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>numel</a> · <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/aten/src/ATen/core/TensorBase.h#L363" title="pytorch/pytorch @ fbab7cc · aten/src/ATen/core/TensorBase.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>scalar_type</a> · <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/aten/src/ATen/core/TensorBase.h#L623" title="pytorch/pytorch @ fbab7cc · aten/src/ATen/core/TensorBase.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>data_ptr&lt;T&gt;</a></li>
+<li>CUDA 上下文：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/c10/cuda/CUDAStream.h#L233" title="pytorch/pytorch @ fbab7cc · c10/cuda/CUDAStream.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>getCurrentCUDAStream</a> · <a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/aten/src/ATen/cuda/CUDAContextLight.h#L72" title="pytorch/pytorch @ fbab7cc · aten/src/ATen/cuda/CUDAContextLight.h" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>getCurrentDeviceProperties</a></li>
+<li>对照实现：<a class="src" href="https://github.com/pytorch/pytorch/blob/fbab7cc90f5699714d5785aaa2f153c739435d6f/aten/src/ATen/native/cuda/ActivationGeluKernel.cu#L26-L30" title="pytorch/pytorch @ fbab7cc · aten/src/ATen/native/cuda/ActivationGeluKernel.cu" target="_blank" rel="noopener"><span class="src-repo">pytorch</span>PyTorch 的 tanh-GELU kernel</a></li>
+</ul>
+<p><strong>CUDA 内置变量（clang 的开源实现）</strong>：<a class="src" href="https://github.com/llvm/llvm-project/blob/3c4aa885091c12572281a7117dd254907d8cd732/clang/lib/Headers/__clang_cuda_builtin_vars.h#L79-L83" title="llvm/llvm-project @ 3c4aa88 · clang/lib/Headers/__clang_cuda_builtin_vars.h" target="_blank" rel="noopener"><span class="src-repo">llvm</span>blockDim → %ntid</a> · <a class="src" href="https://github.com/llvm/llvm-project/blob/3c4aa885091c12572281a7117dd254907d8cd732/clang/lib/Headers/__clang_cuda_builtin_vars.h#L109" title="llvm/llvm-project @ 3c4aa88 · clang/lib/Headers/__clang_cuda_builtin_vars.h" target="_blank" rel="noopener"><span class="src-repo">llvm</span>blockDim 变量</a></p>
+<p><strong>文档</strong></p>
+<ul>
+<li><a href="https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html#built-in-variables">Programming Guide · Built-in Variables</a> · <a href="https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html#execution-space-specifiers">Execution Space Specifiers</a> · <a href="https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html#inline-specifiers">Inline Specifiers</a> · <a href="https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html#restrict-pointers"><code>__restrict__</code></a></li>
+<li><a href="https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/intro-to-cuda-cpp.html#launching-kernels">Programming Guide · Launching Kernels</a> · <a href="https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/intro-to-cuda-cpp.html#error-checking-in-cuda">Error Checking</a> · <a href="https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/writing-cuda-kernels.html#coalesced-global-memory-access">Coalesced Access</a></li>
+<li><a href="https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#special-registers">PTX · special registers</a></li>
+<li><a href="https://developer.nvidia.com/blog/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/">NVIDIA blog · Grid-Stride Loops</a> · <a href="https://developer.nvidia.com/blog/how-access-global-memory-efficiently-cuda-c-kernels/">How to Access Global Memory Efficiently</a></li>
+<li><a href="https://pytorch.org/tutorials/advanced/cpp_extension.html">PyTorch · Custom C++ and CUDA Extensions</a> · <a href="https://docs.pytorch.org/cppdocs/">PyTorch C++ API</a></li>
+</ul>
+
+</main>
+<script>
+// ---------- React-Flow-style diagram renderer (pure SVG, works offline and in print) ----------
+(function () {
+  var NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, parent) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+  function txt(parent, x, y, s, cls, anchor) { var t = el("text", { x: x, y: y, "class": cls, "text-anchor": anchor || "middle" }, parent); t.textContent = s; return t; }
+  function render(host, spec) {
+    var cfg = spec.cfg || {}, CW = cfg.cw || 200, RH = cfg.rh || 88, NW = cfg.nw || 160, PAD = 26;
+    var N = {}, maxX = 0, maxY = 0;
+    spec.nodes.forEach(function (n) {
+      var w = NW * n.w, h = n.s ? 52 : 38, x = PAD + n.c * CW, y = PAD + 14 + n.r * RH;
+      N[n.id] = { n: n, x: x, y: y, w: w, h: h, cx: x + w / 2, cy: y + h / 2 };
+      maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+    });
+    var groups = (spec.groups || []).map(function (g) {
+      var x0 = PAD + g.c0 * CW - 14, y0 = PAD + 14 + g.r0 * RH - 28, x1 = PAD + g.c1 * CW + NW + 14, y1 = PAD + 14 + g.r1 * RH + 52 + 14;
+      maxX = Math.max(maxX, x1); maxY = Math.max(maxY, y1); return { g: g, x0: x0, y0: y0, x1: x1, y1: y1 };
+    });
+    var W = maxX + PAD, H = maxY + PAD;
+    var svg = el("svg", { viewBox: "0 0 " + W + " " + H, width: W, role: "img", "aria-label": spec.title });
+    var uid = "f" + Math.random().toString(36).slice(2, 8);
+    var defs = el("defs", {}, svg);
+    var pat = el("pattern", { id: uid + "dot", width: 16, height: 16, patternUnits: "userSpaceOnUse" }, defs);
+    el("circle", { cx: 1, cy: 1, r: 1, "class": "f-bgdot" }, pat);
+    var bg = el("rect", { x: 0, y: 0, width: W, height: H, fill: "url(#" + uid + "dot)" }, svg);
+    groups.forEach(function (G) {
+      var gg = el("g", { "class": "f-grp" + (G.g.k ? " k-" + G.g.k : "") }, svg);
+      el("rect", { x: G.x0, y: G.y0, width: G.x1 - G.x0, height: G.y1 - G.y0, rx: 10 }, gg);
+      txt(gg, G.x0 + 10, G.y0 + 15, G.g.t, "", "start");
+    });
+    var edgeLayer = el("g", {}, svg), nodeLayer = el("g", {}, svg), labelLayer = el("g", {}, svg);   // labels on top
+    function side(A, B) {
+      var dx = B.cx - A.cx, dy = B.cy - A.cy;
+      if (Math.abs(dx) >= Math.abs(dy) * 0.9) return dx >= 0 ? ["r", "l"] : ["l", "r"];
+      return dy >= 0 ? ["b", "t"] : ["t", "b"];
+    }
+    function port(P, s) { return s === "r" ? [P.x + P.w, P.cy] : s === "l" ? [P.x, P.cy] : s === "t" ? [P.cx, P.y] : [P.cx, P.y + P.h]; }
+    function dir(s) { return s === "r" ? [1, 0] : s === "l" ? [-1, 0] : s === "t" ? [0, -1] : [0, 1]; }
+    var nodeEdges = {};
+    spec.edges.forEach(function (e, i) {
+      var as = e.a.split(":"), bs = e.b.split(":"), A = N[as[0]], B = N[bs[0]];
+      var auto = side(A, B), sa = as[1] || auto[0], sb = bs[1] || auto[1];
+      var p0 = port(A, sa), p3 = port(B, sb), d0 = dir(sa), d3 = dir(sb);
+      var dist = Math.hypot(p3[0] - p0[0], p3[1] - p0[1]), off = Math.max(36, Math.min(140, dist * 0.45));
+      if (sa === sb) off = Math.max(off, 60);                     // U-shaped loop between two ports on the same side
+      var p1 = [p0[0] + d0[0] * off, p0[1] + d0[1] * off], p2 = [p3[0] + d3[0] * (off + 6), p3[1] + d3[1] * (off + 6)];
+      var end = [p3[0] + d3[0] * 7, p3[1] + d3[1] * 7];             // stop before the arrowhead
+      var cls = "f-e" + (e.k ? " k-" + e.k : "") + (e.anim ? " anim" : "") + (e.dash ? " dash" : "");
+      var path = el("path", { d: "M" + p0 + " C" + p1 + " " + p2 + " " + end, "class": cls }, edgeLayer);
+      var ah = el("path", { d: "M" + p3 + " l" + (-d3[0] * 8 + d3[1] * 4.5) + "," + (-d3[1] * 8 + d3[0] * 4.5) + " l" + (-d3[1] * 9) + "," + (d3[0] * 9) + " z",
+        "class": "f-ah" + (e.k ? " k-" + e.k : "") }, edgeLayer);
+      var items = [path, ah];
+      if (e.t) {
+        var t = 0.5, mx = Math.pow(1 - t, 3) * p0[0] + 3 * Math.pow(1 - t, 2) * t * p1[0] + 3 * (1 - t) * t * t * p2[0] + t * t * t * end[0];
+        var my = Math.pow(1 - t, 3) * p0[1] + 3 * Math.pow(1 - t, 2) * t * p1[1] + 3 * (1 - t) * t * t * p2[1] + t * t * t * end[1];
+        var lg = el("g", { "class": "f-el" }, labelLayer);
+        var tw = 12; for (var ci = 0; ci < e.t.length; ci++) tw += e.t.charCodeAt(ci) > 255 ? 11.5 : 6.6; tw = Math.max(24, tw);
+        // label wider than the gap it sits in: lift it above a horizontal edge / beside a vertical one
+        var horiz = (sa === "l" || sa === "r") && (sb === "l" || sb === "r");
+        var gap = horiz ? Math.abs(end[0] - p0[0]) : Math.abs(end[1] - p0[1]);
+        if (horiz && tw > gap - 6) my = Math.min(p0[1], end[1]) - 15;
+        else if (!horiz && sa !== sb && 20 > gap - 4) mx = Math.max(p0[0], end[0]) + tw / 2 + 8;
+        el("rect", { x: mx - tw / 2, y: my - 10, width: tw, height: 18, rx: 5 }, lg);
+        txt(lg, mx, my + 3.5, e.t, "");
+        items.push(lg);
+      }
+      [as[0], bs[0]].forEach(function (id) { (nodeEdges[id] = nodeEdges[id] || []).push({ items: items, other: id === as[0] ? bs[0] : as[0] }); });
+    });
+    var nodeEls = {};
+    spec.nodes.forEach(function (n) {
+      var P = N[n.id], g = el("g", { "class": "f-node" + (n.k ? " k-" + n.k : "") }, nodeLayer);
+      el("rect", { x: P.x, y: P.y, width: P.w, height: P.h, rx: 9, "class": "f-box" }, g);
+      txt(g, P.cx, P.y + (n.s ? 21 : 23.5), n.t, "f-t");
+      if (n.s) txt(g, P.cx, P.y + 39, n.s, "f-s");
+      [["l", P.x, P.cy], ["r", P.x + P.w, P.cy], ["t", P.cx, P.y], ["b", P.cx, P.y + P.h]].forEach(function (h) {
+        el("circle", { cx: h[1], cy: h[2], r: 2.6, "class": "f-handle" }, g);
+      });
+      nodeEls[n.id] = g;
+      g.addEventListener("mouseenter", function () {
+        svg.classList.add("f-on"); g.classList.add("hl");
+        (nodeEdges[n.id] || []).forEach(function (c) { c.items.forEach(function (x) { x.classList.add("hl"); }); nodeEls[c.other].classList.add("hl"); });
+      });
+      g.addEventListener("mouseleave", function () {
+        svg.classList.remove("f-on"); svg.querySelectorAll(".hl").forEach(function (x) { x.classList.remove("hl"); });
+      });
+    });
+    host.appendChild(svg);
+    // grow the canvas to whatever was actually drawn (loop edges swing outside the node grid)
+    try {
+      var bb = svg.getBBox(), x0 = Math.min(0, bb.x - 12), y0 = Math.min(0, bb.y - 12);
+      var x1 = Math.max(W, bb.x + bb.width + 12), y1 = Math.max(H, bb.y + bb.height + 12);
+      svg.setAttribute("viewBox", x0 + " " + y0 + " " + (x1 - x0) + " " + (y1 - y0));
+      svg.setAttribute("width", x1 - x0);
+      bg.setAttribute("x", x0); bg.setAttribute("y", y0); bg.setAttribute("width", x1 - x0); bg.setAttribute("height", y1 - y0);
+    } catch (err) {}
+  }
+  document.querySelectorAll(".flow-body[data-flow]").forEach(function (h) {
+    try { render(h, JSON.parse(h.getAttribute("data-flow"))); } catch (e) { h.textContent = "diagram error: " + e; }
+  });
+})();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+(function () {
+  var root = document.documentElement, KEY = "gkd-theme";
+  try { var t = localStorage.getItem(KEY); if (t) root.setAttribute("data-theme", t); } catch (e) {}
+  document.getElementById("theme-btn").addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") ? root.getAttribute("data-theme") === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    var next = dark ? "light" : "dark"; root.setAttribute("data-theme", next);
+    try { localStorage.setItem(KEY, next); } catch (e) {}
+  });
+  document.querySelectorAll(".codebox .copy").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var code = b.closest(".codebox").querySelector("code").innerText;
+      (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject()).then(function () {
+        b.textContent = "已复制"; setTimeout(function () { b.textContent = "复制"; }, 1200);
+      }, function () { b.textContent = "复制失败"; });
+    });
+  });
+  if (window.hljs) document.querySelectorAll("pre code").forEach(function (el) {
+    if (!el.className) el.classList.add("language-plaintext");
+    try { hljs.highlightElement(el); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

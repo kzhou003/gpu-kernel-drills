@@ -24,6 +24,7 @@ python build/build.py            # 重新生成 index.html（需要 markdown-it-
 | NVIDIA GPU，没有系统 CUDA toolkit | `./setup_env.sh /path/to/python-with-torch && source env.sh`（pip 安装与 torch 同版本的 nvcc）；F 题再 `pip install flashinfer-python` |
 | 只有 CPU | Triton / L / F1–F4 / G / M1–M2 自动走 `TRITON_INTERPRET=1`；macOS 没有 triton wheel，用 `docker run -it -v $PWD:/w -w /w python:3.12-slim bash` |
 | Apple silicon | `python3 -m venv .venv-mlx && .venv-mlx/bin/pip install mlx numpy pytest`（arm64 Python） |
+| 只想读代码（编辑器里跳转定义） | `./setup_ide.sh`：torch、Triton、FlashInfer、vLLM 的源码和 CUDA 头文件装到 `.venv-ide/`、`.refs/`，并配置 VS Code（Pylance + clangd）。不需要 GPU |
 
 页面中约 240 个源码链接都固定在 commit 上（`build/sources/pins.txt`，共 16 个仓库：FlashInfer、vLLM、SGLang、Triton、CUTLASS、flash-attention、DeepGEMM、MLX 等），`file@symbol` 形式的链接直接跳到定义所在的行。
 

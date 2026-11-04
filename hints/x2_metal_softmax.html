@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X2 讲解：Metal 里的行归约（simdgroup + threadgroup 内存）</title>
+<meta name="description" content="把 C2 的 reduction 和 T2 的 softmax 搬到 Apple GPU 上。这一页逐行读参考解：一个 threadgroup 一行、线程怎么跨步扫一行、simd_sum / simd_max 对应 CUDA 的什么、tg_reduce 为什么让每个 simdgroup 都做第二轮归约（于是所有线程都拿到结果）、为什么要两次 barrier，以及三遍读的 softmax 为什么在短行上比 MLX 慢一倍。">
+<style>
+:root {
+  --bg: #f7f6f2; --surface: #ffffff; --surface-2: #f0eee8; --border: #dedad0;
+  --text: #22211e; --muted: #6b675e; --accent: #2f6fdb; --accent-soft: #e3ecfb;
+  --code-bg: #f6f4ef; --l1: #2e8b57; --l1-soft: #e4f3ea; --l2: #b7791f; --l2-soft: #fbf0dc;
+  --l3: #c0392b; --l3-soft: #fbe5e2; --ok: #2e8b57; --bad: #c0392b; --idea: #7a4fc4; --idea-soft: #efe8fb;
+  --tk-kw: #8a3ab9; --tk-str: #2f7d32; --tk-num: #b5541c; --tk-com: #8a867c; --tk-fn: #2457b8; --tk-type: #0f7b8a; --tk-meta: #b7791f;
+  --shadow: 0 1px 2px rgba(0,0,0,.05), 0 2px 8px rgba(0,0,0,.04); --radius: 10px;
+  --font: "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Code", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+  --sidebar: 268px; color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #17181b; --surface: #1f2125; --surface-2: #26282d; --border: #363a41; --text: #e6e4df; --muted: #a19d94;
+  --accent: #7aa7ff; --accent-soft: #23314d; --code-bg: #1b1d21; --l1: #5cc98b; --l1-soft: #1d3327; --l2: #e6b25c; --l2-soft: #3a2f1b;
+  --l3: #f08070; --l3-soft: #3d2320; --ok: #5cc98b; --bad: #f08070; --idea: #b79cf0; --idea-soft: #2c2440;
+  --tk-kw: #d19ef0; --tk-str: #8fd18f; --tk-num: #f0a35e; --tk-com: #7f7b73; --tk-fn: #8cb4ff; --tk-type: #5cc9d6; --tk-meta: #e6b25c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #17181b; --surface: #1f2125; --surface-2: #26282d; --border: #363a41; --text: #e6e4df; --muted: #a19d94;
+  --accent: #7aa7ff; --accent-soft: #23314d; --code-bg: #1b1d21; --l1: #5cc98b; --l1-soft: #1d3327; --l2: #e6b25c; --l2-soft: #3a2f1b;
+  --l3: #f08070; --l3-soft: #3d2320; --ok: #5cc98b; --bad: #f08070; --idea: #b79cf0; --idea-soft: #2c2440;
+  --tk-kw: #d19ef0; --tk-str: #8fd18f; --tk-num: #f0a35e; --tk-com: #7f7b73; --tk-fn: #8cb4ff; --tk-type: #5cc9d6; --tk-meta: #e6b25c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark; }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 60px; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15.5px/1.75 var(--font); overflow-x: hidden; }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+.btn { appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 8px;
+  padding: 3px 10px; font: inherit; font-size: 13px; cursor: pointer; line-height: 1.5; }
+.btn:hover { border-color: var(--accent); }
+
+/* top bar + sidebar */
+.topbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); font-size: 14px; }
+.topbar .home { font-weight: 700; color: var(--text); white-space: nowrap; }
+.topbar .spacer { flex: 1; }
+.topbar .prog-mini { color: var(--muted); font-size: 13px; white-space: nowrap; }
+#nav-btn { display: none; }
+.layout { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); }
+.sidebar { position: sticky; top: 49px; height: calc(100vh - 49px); height: calc(100dvh - 49px); overflow-y: auto;
+  border-right: 1px solid var(--border); padding: 14px 10px 40px 14px; font-size: 13.5px; scrollbar-width: thin; }
+.nav-group { margin: 14px 0 4px; font-size: 11.5px; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.nav-group:first-child { margin-top: 0; }
+.nav-tier { margin: 18px 0 2px; font-size: 11px; font-weight: 800; letter-spacing: .12em; color: var(--accent); text-transform: uppercase; }
+.nav-tier:first-child { margin-top: 0; }
+.tier-banner { margin: 72px 0 -40px; font: 800 13px var(--font); letter-spacing: .3em; color: var(--accent); }
+.nav-item { display: flex; align-items: baseline; gap: 6px; padding: 3px 8px; border-radius: 6px; color: var(--text); line-height: 1.45; }
+.nav-item:hover { background: var(--surface-2); text-decoration: none; }
+.nav-item.cur { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav-item .nid { font: 700 12px var(--mono); color: var(--accent); min-width: 22px; }
+.nav-item .nmin { margin-left: auto; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.nav-item.done .nid::after { content: " ✓"; color: var(--ok); }
+.nav-item.done { color: var(--muted); }
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  #nav-btn { display: inline-block; }
+  .sidebar { position: fixed; z-index: 40; top: 49px; left: 0; width: min(300px, 85vw); background: var(--bg);
+    transform: translateX(-102%); transition: transform .2s; box-shadow: var(--shadow); }
+  body.nav-open .sidebar { transform: none; }
+}
+
+/* page */
+.page { width: 100%; max-width: 940px; margin: 0 auto; padding: 24px 20px 120px; min-width: 0; }
+.hero { margin: 8px 0 28px; }
+.kicker { color: var(--muted); font-size: 13px; letter-spacing: .04em; }
+.hero h1 { font-size: 30px; line-height: 1.3; margin: 4px 0 10px; }
+.lede { color: var(--muted); margin: 4px 0 12px; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.badge { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 999px; padding: 1px 10px; font-size: 12.5px; color: var(--muted); }
+.badge b { color: var(--text); font-weight: 600; }
+.badge code { font-size: 11.5px; }
+.badge.diff-易 b { color: var(--ok); } .badge.diff-中 b { color: var(--l2); } .badge.diff-难 b { color: var(--bad); }
+.done-toggle { cursor: pointer; } .done-toggle input { margin: 0 4px 0 0; }
+.progress { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); margin-top: 10px; }
+.progress > div { height: 100%; background: var(--ok); width: 0; transition: width .3s; }
+
+section.part, section.drill { margin: 0 0 56px; scroll-margin-top: 60px; }
+section.drill { border-top: 3px solid var(--accent); padding-top: 18px; }
+section.part > h2, .drill-head h2 { font-size: 25px; line-height: 1.35; margin: 4px 0 6px; }
+.drill-head .did { font: 700 .85em var(--mono); color: #fff; background: var(--accent); border-radius: 6px; padding: 1px 8px; margin-right: 10px; vertical-align: 2px; }
+.track-banner { margin: 64px 0 28px; padding: 16px 18px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); scroll-margin-top: 60px; }
+.track-banner h2 { margin: 0; font-size: 22px; } .track-banner p { margin: 4px 0 0; color: var(--muted); }
+.mini-toc { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px; margin: 12px 0 18px; font-size: 13.5px; }
+.mini-toc ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 28px; }
+@media (max-width: 640px) { .mini-toc ol { columns: 1; } .page { padding: 16px 16px 96px; } .hero h1 { font-size: 24px; } }
+h3 { font-size: 19px; margin: 34px 0 10px; padding-top: 8px; border-top: 1px solid var(--border); scroll-margin-top: 60px; }
+h4 { font-size: 16px; margin: 20px 0 6px; }
+p, ul, ol { margin: 8px 0; } li { margin: 3px 0; }
+hr { border: 0; border-top: 1px dashed var(--border); margin: 20px 0; }
+blockquote { margin: 12px 0; padding: 6px 14px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+code { font-family: var(--mono); font-size: .86em; background: var(--code-bg); border: 1px solid var(--border); padding: 0 4px; border-radius: 4px; }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto;
+  font-size: 13px; line-height: 1.55; margin: 10px 0; tab-size: 4; }
+pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+:not(pre) > code { overflow-wrap: anywhere; }
+.codebox { margin: 12px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--code-bg); }
+.codebox pre { margin: 0; border: 0; border-radius: 0; max-height: 640px; }
+details.solution .codebox pre { max-height: none; }
+.code-head { display: flex; align-items: center; gap: 10px; padding: 5px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.code-head .path { font-family: var(--mono); font-weight: 600; } .code-head .btn { margin-left: auto; padding: 1px 8px; font-size: 12px; }
+.table-wrap { overflow-x: auto; margin: 10px 0; }
+table { border-collapse: collapse; font-size: 13.5px; min-width: 60%; background: var(--surface); }
+th, td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+th { background: var(--surface-2); font-weight: 600; }
+.callout { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 10px 14px; margin: 14px 0; box-shadow: var(--shadow); }
+.callout > .callout-title { font-weight: 700; margin-bottom: 2px; }
+.callout.info { border-left: 4px solid var(--accent); } .callout.warn { border-left: 4px solid var(--bad); }
+.callout.ok { border-left: 4px solid var(--ok); } .callout.idea { border-left: 4px solid var(--idea); }
+details.hint, details.solution { border: 1px solid var(--border); border-radius: var(--radius); margin: 12px 0; background: var(--surface); box-shadow: var(--shadow); }
+details.hint > summary, details.solution > summary { cursor: pointer; list-style: none; padding: 9px 14px; font-weight: 600;
+  display: flex; align-items: center; gap: 10px; border-radius: var(--radius); flex-wrap: wrap; }
+details > summary::-webkit-details-marker { display: none; }
+details.hint > summary::after, details.solution > summary::after { content: "展开 ▸"; margin-left: auto; font-size: 12px; color: var(--muted); font-weight: 400; }
+details[open].hint > summary::after, details[open].solution > summary::after { content: "收起 ▾"; }
+details[open].hint > summary, details[open].solution > summary { border-bottom: 1px solid var(--border); border-radius: var(--radius) var(--radius) 0 0; }
+details.hint > .body, details.solution > .body { padding: 6px 16px 14px; }
+.lvl { display: inline-block; border-radius: 6px; padding: 0 8px; font-size: 12px; font-weight: 700; color: #fff; }
+details.hint.l1 > summary { background: var(--l1-soft); } details.hint.l1 .lvl { background: var(--l1); }
+details.hint.l2 > summary { background: var(--l2-soft); } details.hint.l2 .lvl { background: var(--l2); }
+details.hint.l3 > summary { background: var(--l3-soft); } details.hint.l3 .lvl { background: var(--l3); }
+details.solution { border-color: var(--bad); } details.solution > summary { background: var(--l3-soft); } details.solution .lvl { background: var(--bad); }
+.spoiler-note { font-size: 12px; color: var(--muted); font-weight: 400; }
+details.answer { border: 1px dashed var(--border); border-radius: 8px; margin: 10px 0; background: var(--surface-2); }
+details.answer > summary { cursor: pointer; padding: 6px 12px; color: var(--accent); font-size: 14px; }
+details.answer > .body { padding: 2px 14px 10px; }
+a.src { display: inline-flex; align-items: baseline; gap: 4px; margin: 1px 0; padding: 0 7px; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--surface); font: 12.5px/1.7 var(--mono); color: var(--accent); white-space: nowrap; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; vertical-align: baseline; }
+a.src:hover { border-color: var(--accent); text-decoration: none; }
+a.src .src-repo { font-size: 10.5px; color: var(--muted); }
+a.src .src-repo::after { content: " ›"; }
+.muted { color: var(--muted); } .small { font-size: 13px; }
+.diagram { overflow-x: auto; margin: 12px 0; } .diagram svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.diagram svg text { fill: var(--text); font-family: var(--font); }
+
+/* syntax highlighting (highlight.js classes, colours follow the theme) */
+.hljs-keyword, .hljs-built_in, .hljs-literal { color: var(--tk-kw); }
+.hljs-string, .hljs-char, .hljs-regexp { color: var(--tk-str); }
+.hljs-number { color: var(--tk-num); }
+.hljs-comment, .hljs-quote { color: var(--tk-com); font-style: italic; }
+.hljs-title, .hljs-title.function_, .hljs-function .hljs-title { color: var(--tk-fn); }
+.hljs-type, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--tk-type); }
+.hljs-meta, .hljs-meta .hljs-keyword, .hljs-decorator { color: var(--tk-meta); }
+.hljs-attr, .hljs-variable, .hljs-params { color: inherit; }
+
+@media print {
+  .topbar, .sidebar { display: none !important; } .layout { display: block; }
+  details { break-inside: avoid; } .codebox pre { max-height: none; }
+}
+
+/* ---------- React-Flow-style diagrams ---------- */
+:root { --f-dot: #d9d5cb; --f-acc: #2f6fdb; --f-acc-bg: #e3ecfb; --f-warn: #b7791f; --f-warn-bg: #fbf0dc; --f-pass: #2e8b57; --f-pass-bg: #e4f3ea;
+  --f-vio: #7a4fc4; --f-vio-bg: #efe8fb; --f-teal: #0f7b8a; --f-teal-bg: #e0f2f4; --f-todo: #c0392b; --f-todo-bg: #fbe5e2; --f-hl: #ffb020; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --f-dot: #30333a; --f-acc: #7aa7ff; --f-acc-bg: #23314d; --f-warn: #e6b25c; --f-warn-bg: #3a2f1b;
+  --f-pass: #5cc98b; --f-pass-bg: #1d3327; --f-vio: #b79cf0; --f-vio-bg: #2c2440; --f-teal: #5cc9d6; --f-teal-bg: #163238; --f-todo: #f08070; --f-todo-bg: #3d2320; } }
+:root[data-theme="dark"] { --f-dot: #30333a; --f-acc: #7aa7ff; --f-acc-bg: #23314d; --f-warn: #e6b25c; --f-warn-bg: #3a2f1b;
+  --f-pass: #5cc98b; --f-pass-bg: #1d3327; --f-vio: #b79cf0; --f-vio-bg: #2c2440; --f-teal: #5cc9d6; --f-teal-bg: #163238; --f-todo: #f08070; --f-todo-bg: #3d2320; }
+figure.flow { margin: 16px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.flow-head { display: flex; align-items: baseline; gap: 10px; padding: 7px 12px; font-weight: 700; font-size: 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.flow-hint { margin-left: auto; font-weight: 400; font-size: 11.5px; color: var(--muted); }
+.flow-body { overflow-x: auto; }
+.flow-body svg { display: block; margin: 0 auto; max-width: 100%; height: auto; font-family: var(--font); }
+figure.flow figcaption { padding: 7px 12px 9px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+.f-bgdot { fill: var(--f-dot); }
+.f-node rect.f-box { fill: var(--surface); stroke: var(--border); stroke-width: 1.3; filter: drop-shadow(0 1px 1.5px rgba(10,20,40,.10)); transition: stroke-width .15s; }
+.f-node text.f-t { fill: var(--text); font-size: 13px; font-weight: 650; }
+.f-node text.f-s { fill: var(--muted); font-size: 11px; font-family: var(--mono); }
+.f-node .f-handle { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; }
+.f-node.k-acc rect.f-box { fill: var(--f-acc-bg); stroke: var(--f-acc); } .f-node.k-warn rect.f-box { fill: var(--f-warn-bg); stroke: var(--f-warn); }
+.f-node.k-pass rect.f-box { fill: var(--f-pass-bg); stroke: var(--f-pass); } .f-node.k-vio rect.f-box { fill: var(--f-vio-bg); stroke: var(--f-vio); }
+.f-node.k-teal rect.f-box { fill: var(--f-teal-bg); stroke: var(--f-teal); } .f-node.k-todo rect.f-box { fill: var(--f-todo-bg); stroke: var(--f-todo); }
+.f-node.k-dark rect.f-box { fill: var(--text); stroke: var(--text); } .f-node.k-dark text { fill: var(--bg) !important; }
+.f-node.k-ghost rect.f-box { fill: none; stroke-dasharray: 4 3; }
+.f-grp rect { fill: none; stroke: var(--border); stroke-width: 1.4; stroke-dasharray: 6 4; }
+.f-grp text { fill: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.f-grp.k-acc rect { fill: var(--f-acc-bg); fill-opacity: .35; stroke: var(--f-acc); } .f-grp.k-warn rect { fill: var(--f-warn-bg); fill-opacity: .45; stroke: var(--f-warn); }
+.f-grp.k-pass rect { fill: var(--f-pass-bg); fill-opacity: .45; stroke: var(--f-pass); } .f-grp.k-vio rect { fill: var(--f-vio-bg); fill-opacity: .45; stroke: var(--f-vio); }
+.f-grp.k-teal rect { fill: var(--f-teal-bg); fill-opacity: .45; stroke: var(--f-teal); } .f-grp.k-todo rect { fill: var(--f-todo-bg); fill-opacity: .45; stroke: var(--f-todo); }
+.f-e { fill: none; stroke: var(--muted); stroke-width: 1.6; transition: opacity .15s; }
+.f-e.k-acc { stroke: var(--f-acc); } .f-e.k-warn { stroke: var(--f-warn); } .f-e.k-pass { stroke: var(--f-pass); }
+.f-e.k-vio { stroke: var(--f-vio); } .f-e.k-teal { stroke: var(--f-teal); } .f-e.k-todo { stroke: var(--f-todo); }
+.f-ah { fill: var(--muted); } .f-ah.k-acc { fill: var(--f-acc); } .f-ah.k-warn { fill: var(--f-warn); } .f-ah.k-pass { fill: var(--f-pass); }
+.f-ah.k-vio { fill: var(--f-vio); } .f-ah.k-teal { fill: var(--f-teal); } .f-ah.k-todo { fill: var(--f-todo); }
+.f-e.dash { stroke-dasharray: 5 4; }
+.f-e.anim { stroke-dasharray: 6 4; animation: fdash .9s linear infinite; }
+@keyframes fdash { to { stroke-dashoffset: -20; } }
+@media (prefers-reduced-motion: reduce) { .f-e.anim { animation: none; } }
+.f-el rect { fill: var(--surface); stroke: var(--border); }
+.f-el text { fill: var(--text); font-size: 11px; font-family: var(--mono); }
+svg.f-on .f-e:not(.hl), svg.f-on .f-el:not(.hl), svg.f-on .f-ah:not(.hl) { opacity: .15; }
+svg.f-on .f-node:not(.hl) { opacity: .4; }
+svg .f-node.hl rect.f-box { stroke-width: 2.4; }
+.callout.analogy { border-left: 4px solid #d9822b; background: color-mix(in srgb, #d9822b 7%, var(--surface)); }
+.callout.analogy > .callout-title { color: #b8691c; }
+
+.page { max-width: 900px; }
+.qnav { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.qnav a { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 1px 10px; font-size: 13px; }
+.qnav a:hover { border-color: var(--accent); text-decoration: none; }
+.q { font-size: 13px; color: var(--muted); margin: -4px 0 10px; }
+.q b { color: var(--text); }
+/* element/thread cell strips */
+.cells { display: grid; gap: 3px; margin: 8px 0; }
+.cells > div { border: 1px solid var(--border); border-radius: 5px; padding: 2px 0; text-align: center; font: 11.5px/1.35 var(--mono); background: var(--surface); }
+.cells > div small { display: block; color: var(--muted); font-size: 10px; }
+.cells .lbl { border: 0; background: none; text-align: right; padding-right: 6px; color: var(--muted); font-family: var(--font); }
+.c0 { background: var(--f-acc-bg) !important; border-color: var(--f-acc) !important; }
+.c1 { background: var(--f-warn-bg) !important; border-color: var(--f-warn) !important; }
+.c2 { background: var(--f-pass-bg) !important; border-color: var(--f-pass) !important; }
+.c3 { background: var(--f-vio-bg) !important; border-color: var(--f-vio) !important; }
+.cx { background: repeating-linear-gradient(135deg, var(--surface), var(--surface) 4px, var(--surface-2) 4px, var(--surface-2) 8px) !important; color: var(--muted); border-style: dashed !important; }
+.strip-scroll { overflow-x: auto; }
+td:first-child code { white-space: nowrap; }
+.legend { font-size: 12.5px; color: var(--muted); margin: 2px 0 10px; }
+.legend span { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; margin: 0 3px 0 10px; border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="home" href="../index.html">Kernel Dev 训练营</a><a href="index.html">/ 提示与讲解</a>
+  <span class="spacer"></span>
+  <button type="button" class="btn" id="theme-btn" title="切换明暗">◐</button>
+</header>
+<main class="page" id="top">
+<section class="hero">
+  <div class="kicker">X2 提示与讲解 · Track X · MLX / Metal · 对照 <code>solutions/x2_metal_softmax.py</code> 逐行读</div>
+  <h1>X2 讲解：Metal 里的行归约（simdgroup + threadgroup 内存）</h1>
+  <p class="lede">把 C2 的 reduction 和 T2 的 softmax 搬到 Apple GPU 上。这一页逐行读参考解：一个 threadgroup 一行、线程怎么跨步扫一行、simd_sum / simd_max 对应 CUDA 的什么、tg_reduce 为什么让每个 simdgroup 都做第二轮归约（于是所有线程都拿到结果）、为什么要两次 barrier，以及三遍读的 softmax 为什么在短行上比 MLX 慢一倍。</p>
+  <nav class="qnav"><a href="#x2_metal_softmax-1">① 先看全貌：一个 threadgroup 负责一行</a><a href="#x2_metal_softmax-2">② kernel 开头：内置属性和 auto</a><a href="#x2_metal_softmax-3">③ tg_reduce：每个线程都拿到结果</a><a href="#x2_metal_softmax-4">④ 三遍扫描和 RMSNorm</a><a href="#x2_metal_softmax-5">⑤ 对照 MLX 源码</a><a href="#x2_metal_softmax-6">⑥ 常见坑与自测</a><a href="#x2_metal_softmax-7">源码与资料索引</a></nav>
+</section>
+
+<div class="callout info"><div class="callout-title">怎么读这一页</div><p>对照 <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x2_metal_softmax.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x2_metal_softmax.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>x2_metal_softmax.py</a> 读。前置：<a href="c2_reduce_sum.html">C2 讲解</a>（两层归约）、<a href="t2_softmax.html">T2 讲解</a>（减 max 的 softmax）、<a href="x1_metal_elementwise.html">X1 讲解</a>（metal_kernel 和 grid 的语义）。这一页主要讲 Metal 版和 CUDA 版的不同。</p>
+</div>
+<h3 id="x2_metal_softmax-1">① 先看全貌：一个 threadgroup 负责一行</h3>
+
+<figure class="flow"><div class="flow-head">一行 softmax 的三遍（每遍都读整行）<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;一行 softmax 的三遍（每遍都读整行）&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;p1&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;第 1 遍：跨步求 max&quot;, &quot;s&quot;: &quot;每个线程扫 n / nthr 个&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;r1&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;tg_reduce&lt;max&gt;&quot;, &quot;s&quot;: &quot;simd_max + threadgroup 内存&quot;, &quot;k&quot;: &quot;teal&quot;, &quot;w&quot;: 1.1}, {&quot;id&quot;: &quot;p2&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;第 2 遍：Σ exp(x − m)&quot;, &quot;s&quot;: &quot;&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;r2&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;tg_reduce&lt;sum&gt;&quot;, &quot;s&quot;: &quot;&quot;, &quot;k&quot;: &quot;teal&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;p3&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;第 3 遍：exp(x − m) / s&quot;, &quot;s&quot;: &quot;写回 out&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.05}], &quot;edges&quot;: [{&quot;a&quot;: &quot;p1&quot;, &quot;b&quot;: &quot;r1&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;r1&quot;, &quot;b&quot;: &quot;p2&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;p2&quot;, &quot;b&quot;: &quot;r2&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;r2&quot;, &quot;b&quot;: &quot;p3&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 225.0, &quot;nw&quot;: 170.0}}"></div><figcaption>和 T2 不同，这里的整行不在寄存器里，而是每一遍都从内存重新读。好处是行多长都能处理；代价是读三次。T2 的 softmax 一次把整行读进寄存器，只读一次。</figcaption></figure>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>CUDA（C2）</th>
+<th>Metal（X2）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>block</td>
+<td>threadgroup：一行一个</td>
+</tr>
+<tr>
+<td>warp</td>
+<td>simdgroup（32 个线程）</td>
+</tr>
+<tr>
+<td><code>__shfl_down_sync</code> 循环 5 轮</td>
+<td><code>simd_sum(v)</code> / <code>simd_max(v)</code>：一个函数调用，硬件做完</td>
+</tr>
+<tr>
+<td><code>__shared__ float warp_sums[8]</code></td>
+<td><code>threadgroup float scratch[32]</code></td>
+</tr>
+<tr>
+<td><code>__syncthreads()</code></td>
+<td><code>threadgroup_barrier(mem_flags::mem_threadgroup)</code></td>
+</tr>
+<tr>
+<td><code>lane = threadIdx.x &amp; 31</code></td>
+<td><code>thread_index_in_simdgroup</code>（内置属性）</td>
+</tr>
+<tr>
+<td><code>warp = threadIdx.x &gt;&gt; 5</code></td>
+<td><code>simdgroup_index_in_threadgroup</code>（内置属性）</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="x2_metal_softmax-2">② kernel 开头：内置属性和 auto</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x2_metal_softmax.py#L28-L38" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x2_metal_softmax.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>_SOFTMAX 开头（28–38 行）</a></p>
+<pre><code class="language-cpp">uint row  = threadgroup_position_in_grid.x;       // 第几个 threadgroup = 第几行
+uint tid  = thread_position_in_threadgroup.x;     // 组内第几个线程
+uint nthr = threads_per_threadgroup.x;
+uint lane = thread_index_in_simdgroup;            // 0..31
+uint sg   = simdgroup_index_in_threadgroup;       // 第几个 simdgroup
+uint nsg  = (nthr + 31) / 32;
+threadgroup float scratch[32];
+auto xr = x + row * n;
+</code></pre>
+<ul>
+<li>这些名字都是 Metal 的内置属性，函数体里用到了，MLX 就自动加进签名（X1 讲过）。Metal 直接给出 lane 和 simdgroup 编号，不用自己算 <code>&amp; 31</code>、<code>&gt;&gt; 5</code>。</li>
+<li><code>threadgroup float scratch[32]</code>：每个 simdgroup 一个槽，最多 1024 / 32 = 32 个 simdgroup。</li>
+<li><strong>为什么用 <code>auto</code></strong>（注释 37 行）：MLX 可能把很小的输入放在 <code>constant</code> 地址空间而不是 <code>device</code>，写死 <code>const device T*</code> 就会类型不匹配。用 <code>auto</code> 让编译器推断。</li>
+</ul>
+<p>host 端（<a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x2_metal_softmax.py#L82-L87" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x2_metal_softmax.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>82–87 行</a>）：<code>grid=(rows * t, 1, 1), threadgroup=(t, 1, 1)</code>。别忘了 X1 讲的：grid 是<strong>线程总数</strong>，所以 rows 行就是 rows × t 个线程。</p>
+<h3>每行几个线程</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x2_metal_softmax.py#L77-L79" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x2_metal_softmax.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>_threads（77–79 行）</a>：ncols &lt; 1024 时取不小于 ncols 的 2 的幂（至少 32），否则 1024。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ncols</th>
+<th>线程数 t</th>
+<th>每个线程扫几个</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>32</td>
+<td>1（31 个线程闲着）</td>
+</tr>
+<tr>
+<td>100</td>
+<td>128</td>
+<td>1（28 个闲着）</td>
+</tr>
+<tr>
+<td>1000</td>
+<td>1024</td>
+<td>1</td>
+</tr>
+<tr>
+<td>4096</td>
+<td>1024</td>
+<td>4</td>
+</tr>
+<tr>
+<td>32000</td>
+<td>1024</td>
+<td>31–32</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="x2_metal_softmax-3">③ tg_reduce：每个线程都拿到结果</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x2_metal_softmax.py#L14-L25" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x2_metal_softmax.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>tg_reduce（14–25 行）</a></p>
+<pre><code class="language-cpp">template &lt;bool IS_MAX&gt;
+inline float tg_reduce(float v, threadgroup float* scratch, uint lane, uint sg, uint nsg) {
+    v = IS_MAX ? simd_max(v) : simd_sum(v);          // ① simdgroup 内归约
+    if (lane == 0) scratch[sg] = v;                  // ② 每个 simdgroup 交一份
+    threadgroup_barrier(mem_flags::mem_threadgroup); // ③ 等大家都交完
+    float init = IS_MAX ? -INFINITY : 0.0f;
+    v = lane &lt; nsg ? scratch[lane] : init;           // ④ 读回部分结果
+    v = IS_MAX ? simd_max(v) : simd_sum(v);          //    每个 simdgroup 都做一遍
+    threadgroup_barrier(mem_flags::mem_threadgroup); // ⑤ 让调用方能马上复用 scratch
+    return v;
+}
+</code></pre>
+<p>和 C2 的 block 归约结构一样，有两个不同：</p>
+<p><strong>不同 1：simd_sum 一次调用就完成 simdgroup 内的归约。</strong> 而且它的结果<strong>每个 lane 都有</strong>，不像 C2 的 <code>__shfl_down_sync</code> 只有 lane 0 是对的。</p>
+<p><strong>不同 2：第二轮归约每个 simdgroup 都做，而不是只有第 0 个。</strong> C2 只需要一个数去做 atomicAdd，所以只让 warp 0 归约。softmax 不同：每个线程后面都要用 max 和 sum 去算自己负责的那些元素。如果只有 simdgroup 0 有结果，还得再写一次 scratch、再 barrier 一次广播给大家。让每个 simdgroup 都读一遍 scratch 并自己归约，算了重复的活，但省掉了一次广播，所有线程都直接拿到结果。</p>
+
+<figure class="flow"><div class="flow-head">tg_reduce 里的数据流（4 个 simdgroup）<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;tg_reduce 里的数据流（4 个 simdgroup）&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;s0&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;simdgroup 0&quot;, &quot;s&quot;: &quot;simd_sum → 所有 lane 都有 p0&quot;, &quot;k&quot;: &quot;teal&quot;, &quot;w&quot;: 1.12}, {&quot;id&quot;: &quot;s3&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;simdgroup 3&quot;, &quot;s&quot;: &quot;simd_sum → p3&quot;, &quot;k&quot;: &quot;teal&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;sc&quot;, &quot;c&quot;: 1.05, &quot;r&quot;: 0.65, &quot;t&quot;: &quot;scratch[0..3]&quot;, &quot;s&quot;: &quot;threadgroup 内存&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;b&quot;, &quot;c&quot;: 2.05, &quot;r&quot;: 0.65, &quot;t&quot;: &quot;barrier&quot;, &quot;s&quot;: &quot;&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;r&quot;, &quot;c&quot;: 3.05, &quot;r&quot;: 0.65, &quot;t&quot;: &quot;每个 simdgroup 读 scratch&quot;, &quot;s&quot;: &quot;再 simd_sum，人人都有总和&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.1}], &quot;edges&quot;: [{&quot;a&quot;: &quot;s0&quot;, &quot;b&quot;: &quot;sc&quot;, &quot;t&quot;: &quot;lane 0 写&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;s3&quot;, &quot;b&quot;: &quot;sc&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;sc&quot;, &quot;b&quot;: &quot;b&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;b&quot;, &quot;b&quot;: &quot;r&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 250.0, &quot;nw&quot;: 170.0}}"></div><figcaption>第 ④ 步里 lane ≥ nsg 的线程填 init（max 填 −inf，sum 填 0），和 C2 里 lane ≥ WARPS 填 0 是同一个道理。</figcaption></figure>
+<p><strong>为什么最后还要一次 barrier（⑤）</strong>：tg_reduce 会被调用两次（先 max 后 sum），两次用的是同一个 scratch。没有第 ⑤ 步的话，一个跑得快的 simdgroup 可能已经进入第二次 tg_reduce，在第 ② 步把自己的部分和写进 scratch，而另一个慢的 simdgroup 还在第 ④ 步读第一次的 max，就会读到被覆盖的值。这叫“读后写”冲突。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 开会传达结果</div><p>C2 的做法是：各组组长把数字交给秘书（scratch），只有第一组的组长汇总，汇总结果交给总部（atomicAdd），其他人不需要知道。X2 不一样，每个人后面都要用这个总数干活。如果还是只让第一组汇总，就得再开一次会把结果告诉大家。参考解的做法是：所有组长交完数字后，<strong>每个组都自己抄一份白板上的数字、自己加一遍</strong>。大家重复做了一点加法，但不用再开第二次会。散会前再等一下（第二次 barrier），确保所有人都抄完了，才允许有人擦白板写下一个议题。</p>
+</div>
+<h3 id="x2_metal_softmax-4">④ 三遍扫描和 RMSNorm</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x2_metal_softmax.py#L40-L49" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x2_metal_softmax.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>40–49 行</a></p>
+<pre><code class="language-cpp">for (uint c = tid; c &lt; n; c += nthr) m = max(m, float(xr[c]));        // 第 1 遍
+m = tg_reduce&lt;true&gt;(m, ...);
+for (uint c = tid; c &lt; n; c += nthr) s += metal::exp(float(xr[c]) - m);   // 第 2 遍
+s = tg_reduce&lt;false&gt;(s, ...);
+for (uint c = tid; c &lt; n; c += nthr) out[row * n + c] = T(metal::exp(float(xr[c]) - m) * inv);  // 第 3 遍
+</code></pre>
+<p><code>for (c = tid; c &lt; n; c += nthr)</code> 是一行之内的 grid-stride loop（C1、C2 讲过）：同一轮里相邻线程读相邻元素，合并访存。</p>
+<p>RMSNorm（<a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x2_metal_softmax.py#L52-L68" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x2_metal_softmax.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>52–68 行</a>）是同样的结构，只需要一次归约（Σx²），所以只扫两遍。</p>
+<h3>为什么短行比 MLX 慢</h3>
+<p>题目页的实测（M2，fp16，2048 行）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>N</th>
+<th>mx.softmax</th>
+<th>参考解</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1024</td>
+<td>310 us</td>
+<td>640 us</td>
+</tr>
+<tr>
+<td>4096</td>
+<td>716 us</td>
+<td>1152 us</td>
+</tr>
+<tr>
+<td>32000</td>
+<td>4432 us</td>
+<td>4032 us</td>
+</tr>
+</tbody>
+</table></div>
+<p>MLX 的 softmax 按行长选两种实现（<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/softmax.cpp#L53" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/softmax.cpp" target="_blank" rel="noopener"><span class="src-repo">mlx</span>axis_size &gt; looped_limit ? &quot;looped_&quot; : &quot;block_&quot;</a>，<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/softmax.cpp#L13" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/softmax.cpp" target="_blank" rel="noopener"><span class="src-repo">mlx</span>SOFTMAX_LOOPED_LIMIT = 4096</a>）：</p>
+<ul>
+<li>行不超过 4096 时用 <a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/softmax.h#L11" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/softmax.h" target="_blank" rel="noopener"><span class="src-repo">mlx</span>softmax_single_row</a>：每个线程一次读 N_READS 个元素放进寄存器（<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/softmax.h#L26-L36" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/softmax.h" target="_blank" rel="noopener"><span class="src-repo">mlx</span>AccT ld 数组</a>），整行只读一次，就像 T2。</li>
+<li>行更长时用 <a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/softmax.h#L101" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/softmax.h" target="_blank" rel="noopener"><span class="src-repo">mlx</span>softmax_looped</a>：多遍读。</li>
+</ul>
+<p>参考解不管多长都读三遍，所以 N ≤ 4096 时慢了将近一倍；N = 32000 时两边都是多遍读，参考解反而略快。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 抄书</div><p>三遍法像抄一本书的索引：第一遍从头翻到尾找最大的页码，第二遍再翻一遍算总数，第三遍再翻一遍写出来。书很薄时（短行），完全可以把整本书放在桌上一眼看完（读进寄存器），只翻一遍。书太厚放不下（长行），才只好一遍遍地翻。MLX 根据书的厚度选办法，参考解永远翻三遍。</p>
+</div>
+<h3 id="x2_metal_softmax-5">⑤ 对照 MLX 源码</h3>
+<ul>
+<li>softmax：<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/softmax.h#L11" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/softmax.h" target="_blank" rel="noopener"><span class="src-repo">mlx</span>softmax_single_row</a>，其中 <a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/softmax.h#L23" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/softmax.h" target="_blank" rel="noopener"><span class="src-repo">mlx</span>threadgroup AccT local_max</a> 就是这里的 scratch，<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/softmax.h#L50-L52" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/softmax.h" target="_blank" rel="noopener"><span class="src-repo">mlx</span>simd_max 之后写 local_max</a> 就是 tg_reduce 的第 ①② 步。</li>
+<li>RMSNorm：<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/rms_norm.metal#L13" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/rms_norm.metal" target="_blank" rel="noopener"><span class="src-repo">mlx</span>rms_single_row</a>，<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/rms_norm.metal#L44-L64" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/rms_norm.metal" target="_blank" rel="noopener"><span class="src-repo">mlx</span>simd_sum → barrier → 第二轮 simd_sum → rsqrt</a>。它把 rsqrt 的结果写进 threadgroup 内存再广播，是“只让一个 simdgroup 归约 + 广播”的另一种写法。</li>
+<li>dispatch 逻辑：<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/softmax.cpp#L46-L65" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/softmax.cpp" target="_blank" rel="noopener"><span class="src-repo">mlx</span>softmax.cpp</a>，怎么根据行长选 kernel 和 threadgroup 大小。</li>
+</ul>
+<h3 id="x2_metal_softmax-6">⑥ 常见坑与自测</h3>
+<ul>
+<li><strong>把 grid 写成行数</strong>：<code>grid=(rows, 1, 1)</code> 只会启动 rows 个线程（X1 讲的语义），每行只有一个线程或者根本没有。</li>
+<li><strong>少了第二次 barrier</strong>：两次 tg_reduce 之间偶尔读到被覆盖的 scratch，结果随机出错。</li>
+<li><strong>第二轮没给 lane ≥ nsg 填 init</strong>：读到 scratch 里上一次留下的垃圾值。</li>
+<li><strong>用 <code>const device T*</code> 而不是 <code>auto</code></strong>：小输入走 <code>constant</code> 地址空间时编译失败。</li>
+<li><strong>在 half 里求 exp 的和</strong>：和 T2 一样，统一转 float。</li>
+</ul>
+
+<details class="answer"><summary>自测 1：ncols = 100 时，t = 128，nsg 是多少？第二轮归约里每个 simdgroup 读 scratch 的哪几个槽？</summary><div class="body"><p>nsg = (128 + 31) / 32 = 4。每个 simdgroup 的 lane 0–3 读 scratch[0..3]，lane 4–31 填 init。4 个 simdgroup 各自做同样的归约，得到同样的结果。</p>
+</div></details>
+
+<details class="answer"><summary>自测 2：把 softmax 改成 online 的“两遍法”，第一遍同时维护什么？tg_reduce 要怎么改？</summary><div class="body"><p>第一遍每个线程维护自己的 (m, s)：遇到更大的值时 <code>s = s·exp(m − m_new) + exp(x − m_new)</code>（T2 第 ⑤ 节的公式）。归约时不能分别对 m 和 s 归约，要把两个 (m, s) 按 <code>m = max(m₁, m₂)</code>、<code>s = s₁·exp(m₁ − m) + s₂·exp(m₂ − m)</code> 合并，所以 tg_reduce 要改成归约一个二元组，simd_max / simd_sum 不能直接用，得用 <code>simd_shuffle_xor</code> 自己写。</p>
+</div></details>
+<h3 id="x2_metal_softmax-7">源码与资料索引</h3>
+<p><strong>本仓库</strong>：<a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/x2_metal_softmax.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/x2_metal_softmax.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>solutions/x2_metal_softmax.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/mine/x2_metal_softmax.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · mine/x2_metal_softmax.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>mine/x2_metal_softmax.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/tests/test_x2_metal_softmax.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · tests/test_x2_metal_softmax.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>tests/test_x2_metal_softmax.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/5d70840a62f8d16dda5af8a6b402b4b07c76c93f/content/x2.md" title="kzhou003/gpu-kernel-drills @ 5d70840 · content/x2.md" target="_blank" rel="noopener"><span class="src-repo">drills</span>content/x2.md</a></p>
+<p><strong>MLX</strong>：<a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/softmax.h#L11" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/softmax.h" target="_blank" rel="noopener"><span class="src-repo">mlx</span>softmax.h</a> · <a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/rms_norm.metal#L13" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/rms_norm.metal" target="_blank" rel="noopener"><span class="src-repo">mlx</span>rms_norm.metal</a> · <a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/softmax.cpp#L46" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/softmax.cpp" target="_blank" rel="noopener"><span class="src-repo">mlx</span>softmax.cpp</a> · <a class="src" href="https://github.com/ml-explore/mlx/blob/b7779c158c0ee32d366929c527da119a89047c6e/mlx/backend/metal/kernels/layer_norm.metal" title="ml-explore/mlx @ b7779c1 · mlx/backend/metal/kernels/layer_norm.metal" target="_blank" rel="noopener"><span class="src-repo">mlx</span>layer_norm.metal</a></p>
+<p><strong>文档</strong>：<a href="https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf">Metal Shading Language Specification</a>（SIMD-group functions、threadgroup_barrier 两节） · <a href="https://ml-explore.github.io/mlx/build/html/dev/custom_metal_kernels.html">MLX · Custom Metal Kernels</a></p>
+
+</main>
+<script>
+// ---------- React-Flow-style diagram renderer (pure SVG, works offline and in print) ----------
+(function () {
+  var NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, parent) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+  function txt(parent, x, y, s, cls, anchor) { var t = el("text", { x: x, y: y, "class": cls, "text-anchor": anchor || "middle" }, parent); t.textContent = s; return t; }
+  function render(host, spec) {
+    var cfg = spec.cfg || {}, CW = cfg.cw || 200, RH = cfg.rh || 88, NW = cfg.nw || 160, PAD = 26;
+    var N = {}, maxX = 0, maxY = 0;
+    spec.nodes.forEach(function (n) {
+      var w = NW * n.w, h = n.s ? 52 : 38, x = PAD + n.c * CW, y = PAD + 14 + n.r * RH;
+      N[n.id] = { n: n, x: x, y: y, w: w, h: h, cx: x + w / 2, cy: y + h / 2 };
+      maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+    });
+    var groups = (spec.groups || []).map(function (g) {
+      var x0 = PAD + g.c0 * CW - 14, y0 = PAD + 14 + g.r0 * RH - 28, x1 = PAD + g.c1 * CW + NW + 14, y1 = PAD + 14 + g.r1 * RH + 52 + 14;
+      maxX = Math.max(maxX, x1); maxY = Math.max(maxY, y1); return { g: g, x0: x0, y0: y0, x1: x1, y1: y1 };
+    });
+    var W = maxX + PAD, H = maxY + PAD;
+    var svg = el("svg", { viewBox: "0 0 " + W + " " + H, width: W, role: "img", "aria-label": spec.title });
+    var uid = "f" + Math.random().toString(36).slice(2, 8);
+    var defs = el("defs", {}, svg);
+    var pat = el("pattern", { id: uid + "dot", width: 16, height: 16, patternUnits: "userSpaceOnUse" }, defs);
+    el("circle", { cx: 1, cy: 1, r: 1, "class": "f-bgdot" }, pat);
+    var bg = el("rect", { x: 0, y: 0, width: W, height: H, fill: "url(#" + uid + "dot)" }, svg);
+    groups.forEach(function (G) {
+      var gg = el("g", { "class": "f-grp" + (G.g.k ? " k-" + G.g.k : "") }, svg);
+      el("rect", { x: G.x0, y: G.y0, width: G.x1 - G.x0, height: G.y1 - G.y0, rx: 10 }, gg);
+      txt(gg, G.x0 + 10, G.y0 + 15, G.g.t, "", "start");
+    });
+    var edgeLayer = el("g", {}, svg), nodeLayer = el("g", {}, svg), labelLayer = el("g", {}, svg);   // labels on top
+    function side(A, B) {
+      var dx = B.cx - A.cx, dy = B.cy - A.cy;
+      if (Math.abs(dx) >= Math.abs(dy) * 0.9) return dx >= 0 ? ["r", "l"] : ["l", "r"];
+      return dy >= 0 ? ["b", "t"] : ["t", "b"];
+    }
+    function port(P, s) { return s === "r" ? [P.x + P.w, P.cy] : s === "l" ? [P.x, P.cy] : s === "t" ? [P.cx, P.y] : [P.cx, P.y + P.h]; }
+    function dir(s) { return s === "r" ? [1, 0] : s === "l" ? [-1, 0] : s === "t" ? [0, -1] : [0, 1]; }
+    var nodeEdges = {};
+    spec.edges.forEach(function (e, i) {
+      var as = e.a.split(":"), bs = e.b.split(":"), A = N[as[0]], B = N[bs[0]];
+      var auto = side(A, B), sa = as[1] || auto[0], sb = bs[1] || auto[1];
+      var p0 = port(A, sa), p3 = port(B, sb), d0 = dir(sa), d3 = dir(sb);
+      var dist = Math.hypot(p3[0] - p0[0], p3[1] - p0[1]), off = Math.max(36, Math.min(140, dist * 0.45));
+      if (sa === sb) off = Math.max(off, 60);                     // U-shaped loop between two ports on the same side
+      var p1 = [p0[0] + d0[0] * off, p0[1] + d0[1] * off], p2 = [p3[0] + d3[0] * (off + 6), p3[1] + d3[1] * (off + 6)];
+      var end = [p3[0] + d3[0] * 7, p3[1] + d3[1] * 7];             // stop before the arrowhead
+      var cls = "f-e" + (e.k ? " k-" + e.k : "") + (e.anim ? " anim" : "") + (e.dash ? " dash" : "");
+      var path = el("path", { d: "M" + p0 + " C" + p1 + " " + p2 + " " + end, "class": cls }, edgeLayer);
+      var ah = el("path", { d: "M" + p3 + " l" + (-d3[0] * 8 + d3[1] * 4.5) + "," + (-d3[1] * 8 + d3[0] * 4.5) + " l" + (-d3[1] * 9) + "," + (d3[0] * 9) + " z",
+        "class": "f-ah" + (e.k ? " k-" + e.k : "") }, edgeLayer);
+      var items = [path, ah];
+      if (e.t) {
+        var t = 0.5, mx = Math.pow(1 - t, 3) * p0[0] + 3 * Math.pow(1 - t, 2) * t * p1[0] + 3 * (1 - t) * t * t * p2[0] + t * t * t * end[0];
+        var my = Math.pow(1 - t, 3) * p0[1] + 3 * Math.pow(1 - t, 2) * t * p1[1] + 3 * (1 - t) * t * t * p2[1] + t * t * t * end[1];
+        var lg = el("g", { "class": "f-el" }, labelLayer);
+        var tw = 12; for (var ci = 0; ci < e.t.length; ci++) tw += e.t.charCodeAt(ci) > 255 ? 11.5 : 6.6; tw = Math.max(24, tw);
+        // label wider than the gap it sits in: lift it above a horizontal edge / beside a vertical one
+        var horiz = (sa === "l" || sa === "r") && (sb === "l" || sb === "r");
+        var gap = horiz ? Math.abs(end[0] - p0[0]) : Math.abs(end[1] - p0[1]);
+        if (horiz && tw > gap - 6) my = Math.min(p0[1], end[1]) - 15;
+        else if (!horiz && sa !== sb && 20 > gap - 4) mx = Math.max(p0[0], end[0]) + tw / 2 + 8;
+        el("rect", { x: mx - tw / 2, y: my - 10, width: tw, height: 18, rx: 5 }, lg);
+        txt(lg, mx, my + 3.5, e.t, "");
+        items.push(lg);
+      }
+      [as[0], bs[0]].forEach(function (id) { (nodeEdges[id] = nodeEdges[id] || []).push({ items: items, other: id === as[0] ? bs[0] : as[0] }); });
+    });
+    var nodeEls = {};
+    spec.nodes.forEach(function (n) {
+      var P = N[n.id], g = el("g", { "class": "f-node" + (n.k ? " k-" + n.k : "") }, nodeLayer);
+      el("rect", { x: P.x, y: P.y, width: P.w, height: P.h, rx: 9, "class": "f-box" }, g);
+      txt(g, P.cx, P.y + (n.s ? 21 : 23.5), n.t, "f-t");
+      if (n.s) txt(g, P.cx, P.y + 39, n.s, "f-s");
+      [["l", P.x, P.cy], ["r", P.x + P.w, P.cy], ["t", P.cx, P.y], ["b", P.cx, P.y + P.h]].forEach(function (h) {
+        el("circle", { cx: h[1], cy: h[2], r: 2.6, "class": "f-handle" }, g);
+      });
+      nodeEls[n.id] = g;
+      g.addEventListener("mouseenter", function () {
+        svg.classList.add("f-on"); g.classList.add("hl");
+        (nodeEdges[n.id] || []).forEach(function (c) { c.items.forEach(function (x) { x.classList.add("hl"); }); nodeEls[c.other].classList.add("hl"); });
+      });
+      g.addEventListener("mouseleave", function () {
+        svg.classList.remove("f-on"); svg.querySelectorAll(".hl").forEach(function (x) { x.classList.remove("hl"); });
+      });
+    });
+    host.appendChild(svg);
+    // grow the canvas to whatever was actually drawn (loop edges swing outside the node grid)
+    try {
+      var bb = svg.getBBox(), x0 = Math.min(0, bb.x - 12), y0 = Math.min(0, bb.y - 12);
+      var x1 = Math.max(W, bb.x + bb.width + 12), y1 = Math.max(H, bb.y + bb.height + 12);
+      svg.setAttribute("viewBox", x0 + " " + y0 + " " + (x1 - x0) + " " + (y1 - y0));
+      svg.setAttribute("width", x1 - x0);
+      bg.setAttribute("x", x0); bg.setAttribute("y", y0); bg.setAttribute("width", x1 - x0); bg.setAttribute("height", y1 - y0);
+    } catch (err) {}
+  }
+  document.querySelectorAll(".flow-body[data-flow]").forEach(function (h) {
+    try { render(h, JSON.parse(h.getAttribute("data-flow"))); } catch (e) { h.textContent = "diagram error: " + e; }
+  });
+})();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+(function () {
+  var root = document.documentElement, KEY = "gkd-theme";
+  try { var t = localStorage.getItem(KEY); if (t) root.setAttribute("data-theme", t); } catch (e) {}
+  document.getElementById("theme-btn").addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") ? root.getAttribute("data-theme") === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    var next = dark ? "light" : "dark"; root.setAttribute("data-theme", next);
+    try { localStorage.setItem(KEY, next); } catch (e) {}
+  });
+  document.querySelectorAll(".codebox .copy").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var code = b.closest(".codebox").querySelector("code").innerText;
+      (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject()).then(function () {
+        b.textContent = "已复制"; setTimeout(function () { b.textContent = "复制"; }, 1200);
+      }, function () { b.textContent = "复制失败"; });
+    });
+  });
+  if (window.hljs) document.querySelectorAll("pre code").forEach(function (el) {
+    if (!el.className) el.classList.add("language-plaintext");
+    try { hljs.highlightElement(el); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

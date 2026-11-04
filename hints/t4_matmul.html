@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>T4 讲解：Triton GEMM，tl.dot、分组顺序与 autotune</title>
+<meta name="description" content="C4 里手写的 shared memory 和寄存器分块，在 Triton 里只剩一行 tl.dot。这一页逐段读参考解：program 怎么按分组顺序分到 C 的 tile（附 4×4 网格的完整对照）、二维指针块是怎么广播出来的、主循环和 mask、num_stages 的软件流水线，以及 autotune 在背后做了什么。">
+<style>
+:root {
+  --bg: #f7f6f2; --surface: #ffffff; --surface-2: #f0eee8; --border: #dedad0;
+  --text: #22211e; --muted: #6b675e; --accent: #2f6fdb; --accent-soft: #e3ecfb;
+  --code-bg: #f6f4ef; --l1: #2e8b57; --l1-soft: #e4f3ea; --l2: #b7791f; --l2-soft: #fbf0dc;
+  --l3: #c0392b; --l3-soft: #fbe5e2; --ok: #2e8b57; --bad: #c0392b; --idea: #7a4fc4; --idea-soft: #efe8fb;
+  --tk-kw: #8a3ab9; --tk-str: #2f7d32; --tk-num: #b5541c; --tk-com: #8a867c; --tk-fn: #2457b8; --tk-type: #0f7b8a; --tk-meta: #b7791f;
+  --shadow: 0 1px 2px rgba(0,0,0,.05), 0 2px 8px rgba(0,0,0,.04); --radius: 10px;
+  --font: "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Code", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+  --sidebar: 268px; color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #17181b; --surface: #1f2125; --surface-2: #26282d; --border: #363a41; --text: #e6e4df; --muted: #a19d94;
+  --accent: #7aa7ff; --accent-soft: #23314d; --code-bg: #1b1d21; --l1: #5cc98b; --l1-soft: #1d3327; --l2: #e6b25c; --l2-soft: #3a2f1b;
+  --l3: #f08070; --l3-soft: #3d2320; --ok: #5cc98b; --bad: #f08070; --idea: #b79cf0; --idea-soft: #2c2440;
+  --tk-kw: #d19ef0; --tk-str: #8fd18f; --tk-num: #f0a35e; --tk-com: #7f7b73; --tk-fn: #8cb4ff; --tk-type: #5cc9d6; --tk-meta: #e6b25c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #17181b; --surface: #1f2125; --surface-2: #26282d; --border: #363a41; --text: #e6e4df; --muted: #a19d94;
+  --accent: #7aa7ff; --accent-soft: #23314d; --code-bg: #1b1d21; --l1: #5cc98b; --l1-soft: #1d3327; --l2: #e6b25c; --l2-soft: #3a2f1b;
+  --l3: #f08070; --l3-soft: #3d2320; --ok: #5cc98b; --bad: #f08070; --idea: #b79cf0; --idea-soft: #2c2440;
+  --tk-kw: #d19ef0; --tk-str: #8fd18f; --tk-num: #f0a35e; --tk-com: #7f7b73; --tk-fn: #8cb4ff; --tk-type: #5cc9d6; --tk-meta: #e6b25c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark; }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 60px; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15.5px/1.75 var(--font); overflow-x: hidden; }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+.btn { appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 8px;
+  padding: 3px 10px; font: inherit; font-size: 13px; cursor: pointer; line-height: 1.5; }
+.btn:hover { border-color: var(--accent); }
+
+/* top bar + sidebar */
+.topbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); font-size: 14px; }
+.topbar .home { font-weight: 700; color: var(--text); white-space: nowrap; }
+.topbar .spacer { flex: 1; }
+.topbar .prog-mini { color: var(--muted); font-size: 13px; white-space: nowrap; }
+#nav-btn { display: none; }
+.layout { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); }
+.sidebar { position: sticky; top: 49px; height: calc(100vh - 49px); height: calc(100dvh - 49px); overflow-y: auto;
+  border-right: 1px solid var(--border); padding: 14px 10px 40px 14px; font-size: 13.5px; scrollbar-width: thin; }
+.nav-group { margin: 14px 0 4px; font-size: 11.5px; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.nav-group:first-child { margin-top: 0; }
+.nav-tier { margin: 18px 0 2px; font-size: 11px; font-weight: 800; letter-spacing: .12em; color: var(--accent); text-transform: uppercase; }
+.nav-tier:first-child { margin-top: 0; }
+.tier-banner { margin: 72px 0 -40px; font: 800 13px var(--font); letter-spacing: .3em; color: var(--accent); }
+.nav-item { display: flex; align-items: baseline; gap: 6px; padding: 3px 8px; border-radius: 6px; color: var(--text); line-height: 1.45; }
+.nav-item:hover { background: var(--surface-2); text-decoration: none; }
+.nav-item.cur { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav-item .nid { font: 700 12px var(--mono); color: var(--accent); min-width: 22px; }
+.nav-item .nmin { margin-left: auto; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.nav-item.done .nid::after { content: " ✓"; color: var(--ok); }
+.nav-item.done { color: var(--muted); }
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  #nav-btn { display: inline-block; }
+  .sidebar { position: fixed; z-index: 40; top: 49px; left: 0; width: min(300px, 85vw); background: var(--bg);
+    transform: translateX(-102%); transition: transform .2s; box-shadow: var(--shadow); }
+  body.nav-open .sidebar { transform: none; }
+}
+
+/* page */
+.page { width: 100%; max-width: 940px; margin: 0 auto; padding: 24px 20px 120px; min-width: 0; }
+.hero { margin: 8px 0 28px; }
+.kicker { color: var(--muted); font-size: 13px; letter-spacing: .04em; }
+.hero h1 { font-size: 30px; line-height: 1.3; margin: 4px 0 10px; }
+.lede { color: var(--muted); margin: 4px 0 12px; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.badge { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 999px; padding: 1px 10px; font-size: 12.5px; color: var(--muted); }
+.badge b { color: var(--text); font-weight: 600; }
+.badge code { font-size: 11.5px; }
+.badge.diff-易 b { color: var(--ok); } .badge.diff-中 b { color: var(--l2); } .badge.diff-难 b { color: var(--bad); }
+.done-toggle { cursor: pointer; } .done-toggle input { margin: 0 4px 0 0; }
+.progress { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); margin-top: 10px; }
+.progress > div { height: 100%; background: var(--ok); width: 0; transition: width .3s; }
+
+section.part, section.drill { margin: 0 0 56px; scroll-margin-top: 60px; }
+section.drill { border-top: 3px solid var(--accent); padding-top: 18px; }
+section.part > h2, .drill-head h2 { font-size: 25px; line-height: 1.35; margin: 4px 0 6px; }
+.drill-head .did { font: 700 .85em var(--mono); color: #fff; background: var(--accent); border-radius: 6px; padding: 1px 8px; margin-right: 10px; vertical-align: 2px; }
+.track-banner { margin: 64px 0 28px; padding: 16px 18px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); scroll-margin-top: 60px; }
+.track-banner h2 { margin: 0; font-size: 22px; } .track-banner p { margin: 4px 0 0; color: var(--muted); }
+.mini-toc { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px; margin: 12px 0 18px; font-size: 13.5px; }
+.mini-toc ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 28px; }
+@media (max-width: 640px) { .mini-toc ol { columns: 1; } .page { padding: 16px 16px 96px; } .hero h1 { font-size: 24px; } }
+h3 { font-size: 19px; margin: 34px 0 10px; padding-top: 8px; border-top: 1px solid var(--border); scroll-margin-top: 60px; }
+h4 { font-size: 16px; margin: 20px 0 6px; }
+p, ul, ol { margin: 8px 0; } li { margin: 3px 0; }
+hr { border: 0; border-top: 1px dashed var(--border); margin: 20px 0; }
+blockquote { margin: 12px 0; padding: 6px 14px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+code { font-family: var(--mono); font-size: .86em; background: var(--code-bg); border: 1px solid var(--border); padding: 0 4px; border-radius: 4px; }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto;
+  font-size: 13px; line-height: 1.55; margin: 10px 0; tab-size: 4; }
+pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+:not(pre) > code { overflow-wrap: anywhere; }
+.codebox { margin: 12px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--code-bg); }
+.codebox pre { margin: 0; border: 0; border-radius: 0; max-height: 640px; }
+details.solution .codebox pre { max-height: none; }
+.code-head { display: flex; align-items: center; gap: 10px; padding: 5px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.code-head .path { font-family: var(--mono); font-weight: 600; } .code-head .btn { margin-left: auto; padding: 1px 8px; font-size: 12px; }
+.table-wrap { overflow-x: auto; margin: 10px 0; }
+table { border-collapse: collapse; font-size: 13.5px; min-width: 60%; background: var(--surface); }
+th, td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+th { background: var(--surface-2); font-weight: 600; }
+.callout { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 10px 14px; margin: 14px 0; box-shadow: var(--shadow); }
+.callout > .callout-title { font-weight: 700; margin-bottom: 2px; }
+.callout.info { border-left: 4px solid var(--accent); } .callout.warn { border-left: 4px solid var(--bad); }
+.callout.ok { border-left: 4px solid var(--ok); } .callout.idea { border-left: 4px solid var(--idea); }
+details.hint, details.solution { border: 1px solid var(--border); border-radius: var(--radius); margin: 12px 0; background: var(--surface); box-shadow: var(--shadow); }
+details.hint > summary, details.solution > summary { cursor: pointer; list-style: none; padding: 9px 14px; font-weight: 600;
+  display: flex; align-items: center; gap: 10px; border-radius: var(--radius); flex-wrap: wrap; }
+details > summary::-webkit-details-marker { display: none; }
+details.hint > summary::after, details.solution > summary::after { content: "展开 ▸"; margin-left: auto; font-size: 12px; color: var(--muted); font-weight: 400; }
+details[open].hint > summary::after, details[open].solution > summary::after { content: "收起 ▾"; }
+details[open].hint > summary, details[open].solution > summary { border-bottom: 1px solid var(--border); border-radius: var(--radius) var(--radius) 0 0; }
+details.hint > .body, details.solution > .body { padding: 6px 16px 14px; }
+.lvl { display: inline-block; border-radius: 6px; padding: 0 8px; font-size: 12px; font-weight: 700; color: #fff; }
+details.hint.l1 > summary { background: var(--l1-soft); } details.hint.l1 .lvl { background: var(--l1); }
+details.hint.l2 > summary { background: var(--l2-soft); } details.hint.l2 .lvl { background: var(--l2); }
+details.hint.l3 > summary { background: var(--l3-soft); } details.hint.l3 .lvl { background: var(--l3); }
+details.solution { border-color: var(--bad); } details.solution > summary { background: var(--l3-soft); } details.solution .lvl { background: var(--bad); }
+.spoiler-note { font-size: 12px; color: var(--muted); font-weight: 400; }
+details.answer { border: 1px dashed var(--border); border-radius: 8px; margin: 10px 0; background: var(--surface-2); }
+details.answer > summary { cursor: pointer; padding: 6px 12px; color: var(--accent); font-size: 14px; }
+details.answer > .body { padding: 2px 14px 10px; }
+a.src { display: inline-flex; align-items: baseline; gap: 4px; margin: 1px 0; padding: 0 7px; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--surface); font: 12.5px/1.7 var(--mono); color: var(--accent); white-space: nowrap; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; vertical-align: baseline; }
+a.src:hover { border-color: var(--accent); text-decoration: none; }
+a.src .src-repo { font-size: 10.5px; color: var(--muted); }
+a.src .src-repo::after { content: " ›"; }
+.muted { color: var(--muted); } .small { font-size: 13px; }
+.diagram { overflow-x: auto; margin: 12px 0; } .diagram svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.diagram svg text { fill: var(--text); font-family: var(--font); }
+
+/* syntax highlighting (highlight.js classes, colours follow the theme) */
+.hljs-keyword, .hljs-built_in, .hljs-literal { color: var(--tk-kw); }
+.hljs-string, .hljs-char, .hljs-regexp { color: var(--tk-str); }
+.hljs-number { color: var(--tk-num); }
+.hljs-comment, .hljs-quote { color: var(--tk-com); font-style: italic; }
+.hljs-title, .hljs-title.function_, .hljs-function .hljs-title { color: var(--tk-fn); }
+.hljs-type, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--tk-type); }
+.hljs-meta, .hljs-meta .hljs-keyword, .hljs-decorator { color: var(--tk-meta); }
+.hljs-attr, .hljs-variable, .hljs-params { color: inherit; }
+
+@media print {
+  .topbar, .sidebar { display: none !important; } .layout { display: block; }
+  details { break-inside: avoid; } .codebox pre { max-height: none; }
+}
+
+/* ---------- React-Flow-style diagrams ---------- */
+:root { --f-dot: #d9d5cb; --f-acc: #2f6fdb; --f-acc-bg: #e3ecfb; --f-warn: #b7791f; --f-warn-bg: #fbf0dc; --f-pass: #2e8b57; --f-pass-bg: #e4f3ea;
+  --f-vio: #7a4fc4; --f-vio-bg: #efe8fb; --f-teal: #0f7b8a; --f-teal-bg: #e0f2f4; --f-todo: #c0392b; --f-todo-bg: #fbe5e2; --f-hl: #ffb020; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --f-dot: #30333a; --f-acc: #7aa7ff; --f-acc-bg: #23314d; --f-warn: #e6b25c; --f-warn-bg: #3a2f1b;
+  --f-pass: #5cc98b; --f-pass-bg: #1d3327; --f-vio: #b79cf0; --f-vio-bg: #2c2440; --f-teal: #5cc9d6; --f-teal-bg: #163238; --f-todo: #f08070; --f-todo-bg: #3d2320; } }
+:root[data-theme="dark"] { --f-dot: #30333a; --f-acc: #7aa7ff; --f-acc-bg: #23314d; --f-warn: #e6b25c; --f-warn-bg: #3a2f1b;
+  --f-pass: #5cc98b; --f-pass-bg: #1d3327; --f-vio: #b79cf0; --f-vio-bg: #2c2440; --f-teal: #5cc9d6; --f-teal-bg: #163238; --f-todo: #f08070; --f-todo-bg: #3d2320; }
+figure.flow { margin: 16px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.flow-head { display: flex; align-items: baseline; gap: 10px; padding: 7px 12px; font-weight: 700; font-size: 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.flow-hint { margin-left: auto; font-weight: 400; font-size: 11.5px; color: var(--muted); }
+.flow-body { overflow-x: auto; }
+.flow-body svg { display: block; margin: 0 auto; max-width: 100%; height: auto; font-family: var(--font); }
+figure.flow figcaption { padding: 7px 12px 9px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+.f-bgdot { fill: var(--f-dot); }
+.f-node rect.f-box { fill: var(--surface); stroke: var(--border); stroke-width: 1.3; filter: drop-shadow(0 1px 1.5px rgba(10,20,40,.10)); transition: stroke-width .15s; }
+.f-node text.f-t { fill: var(--text); font-size: 13px; font-weight: 650; }
+.f-node text.f-s { fill: var(--muted); font-size: 11px; font-family: var(--mono); }
+.f-node .f-handle { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; }
+.f-node.k-acc rect.f-box { fill: var(--f-acc-bg); stroke: var(--f-acc); } .f-node.k-warn rect.f-box { fill: var(--f-warn-bg); stroke: var(--f-warn); }
+.f-node.k-pass rect.f-box { fill: var(--f-pass-bg); stroke: var(--f-pass); } .f-node.k-vio rect.f-box { fill: var(--f-vio-bg); stroke: var(--f-vio); }
+.f-node.k-teal rect.f-box { fill: var(--f-teal-bg); stroke: var(--f-teal); } .f-node.k-todo rect.f-box { fill: var(--f-todo-bg); stroke: var(--f-todo); }
+.f-node.k-dark rect.f-box { fill: var(--text); stroke: var(--text); } .f-node.k-dark text { fill: var(--bg) !important; }
+.f-node.k-ghost rect.f-box { fill: none; stroke-dasharray: 4 3; }
+.f-grp rect { fill: none; stroke: var(--border); stroke-width: 1.4; stroke-dasharray: 6 4; }
+.f-grp text { fill: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.f-grp.k-acc rect { fill: var(--f-acc-bg); fill-opacity: .35; stroke: var(--f-acc); } .f-grp.k-warn rect { fill: var(--f-warn-bg); fill-opacity: .45; stroke: var(--f-warn); }
+.f-grp.k-pass rect { fill: var(--f-pass-bg); fill-opacity: .45; stroke: var(--f-pass); } .f-grp.k-vio rect { fill: var(--f-vio-bg); fill-opacity: .45; stroke: var(--f-vio); }
+.f-grp.k-teal rect { fill: var(--f-teal-bg); fill-opacity: .45; stroke: var(--f-teal); } .f-grp.k-todo rect { fill: var(--f-todo-bg); fill-opacity: .45; stroke: var(--f-todo); }
+.f-e { fill: none; stroke: var(--muted); stroke-width: 1.6; transition: opacity .15s; }
+.f-e.k-acc { stroke: var(--f-acc); } .f-e.k-warn { stroke: var(--f-warn); } .f-e.k-pass { stroke: var(--f-pass); }
+.f-e.k-vio { stroke: var(--f-vio); } .f-e.k-teal { stroke: var(--f-teal); } .f-e.k-todo { stroke: var(--f-todo); }
+.f-ah { fill: var(--muted); } .f-ah.k-acc { fill: var(--f-acc); } .f-ah.k-warn { fill: var(--f-warn); } .f-ah.k-pass { fill: var(--f-pass); }
+.f-ah.k-vio { fill: var(--f-vio); } .f-ah.k-teal { fill: var(--f-teal); } .f-ah.k-todo { fill: var(--f-todo); }
+.f-e.dash { stroke-dasharray: 5 4; }
+.f-e.anim { stroke-dasharray: 6 4; animation: fdash .9s linear infinite; }
+@keyframes fdash { to { stroke-dashoffset: -20; } }
+@media (prefers-reduced-motion: reduce) { .f-e.anim { animation: none; } }
+.f-el rect { fill: var(--surface); stroke: var(--border); }
+.f-el text { fill: var(--text); font-size: 11px; font-family: var(--mono); }
+svg.f-on .f-e:not(.hl), svg.f-on .f-el:not(.hl), svg.f-on .f-ah:not(.hl) { opacity: .15; }
+svg.f-on .f-node:not(.hl) { opacity: .4; }
+svg .f-node.hl rect.f-box { stroke-width: 2.4; }
+.callout.analogy { border-left: 4px solid #d9822b; background: color-mix(in srgb, #d9822b 7%, var(--surface)); }
+.callout.analogy > .callout-title { color: #b8691c; }
+
+.page { max-width: 900px; }
+.qnav { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.qnav a { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 1px 10px; font-size: 13px; }
+.qnav a:hover { border-color: var(--accent); text-decoration: none; }
+.q { font-size: 13px; color: var(--muted); margin: -4px 0 10px; }
+.q b { color: var(--text); }
+/* element/thread cell strips */
+.cells { display: grid; gap: 3px; margin: 8px 0; }
+.cells > div { border: 1px solid var(--border); border-radius: 5px; padding: 2px 0; text-align: center; font: 11.5px/1.35 var(--mono); background: var(--surface); }
+.cells > div small { display: block; color: var(--muted); font-size: 10px; }
+.cells .lbl { border: 0; background: none; text-align: right; padding-right: 6px; color: var(--muted); font-family: var(--font); }
+.c0 { background: var(--f-acc-bg) !important; border-color: var(--f-acc) !important; }
+.c1 { background: var(--f-warn-bg) !important; border-color: var(--f-warn) !important; }
+.c2 { background: var(--f-pass-bg) !important; border-color: var(--f-pass) !important; }
+.c3 { background: var(--f-vio-bg) !important; border-color: var(--f-vio) !important; }
+.cx { background: repeating-linear-gradient(135deg, var(--surface), var(--surface) 4px, var(--surface-2) 4px, var(--surface-2) 8px) !important; color: var(--muted); border-style: dashed !important; }
+.strip-scroll { overflow-x: auto; }
+td:first-child code { white-space: nowrap; }
+.legend { font-size: 12.5px; color: var(--muted); margin: 2px 0 10px; }
+.legend span { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; margin: 0 3px 0 10px; border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="home" href="../index.html">Kernel Dev 训练营</a><a href="index.html">/ 提示与讲解</a>
+  <span class="spacer"></span>
+  <button type="button" class="btn" id="theme-btn" title="切换明暗">◐</button>
+</header>
+<main class="page" id="top">
+<section class="hero">
+  <div class="kicker">T4 提示与讲解 · Track T · Triton · 对照 <code>solutions/t4_matmul.py</code> 逐行读</div>
+  <h1>T4 讲解：Triton GEMM，tl.dot、分组顺序与 autotune</h1>
+  <p class="lede">C4 里手写的 shared memory 和寄存器分块，在 Triton 里只剩一行 tl.dot。这一页逐段读参考解：program 怎么按分组顺序分到 C 的 tile（附 4×4 网格的完整对照）、二维指针块是怎么广播出来的、主循环和 mask、num_stages 的软件流水线，以及 autotune 在背后做了什么。</p>
+  <nav class="qnav"><a href="#t4_matmul-1">① 先看全貌：每个 program 一个 C tile</a><a href="#t4_matmul-2">② 分组顺序：program 和 tile 怎么对应</a><a href="#t4_matmul-3">③ 二维指针块：广播出来的</a><a href="#t4_matmul-4">④ 主循环：load、tl.dot、指针后移</a><a href="#t4_matmul-5">⑤ epilogue</a><a href="#t4_matmul-6">⑥ autotune 在背后做了什么</a><a href="#t4_matmul-7">⑦ 对照与延伸</a><a href="#t4_matmul-8">⑧ 常见坑与自测</a><a href="#t4_matmul-9">源码与资料索引</a></nav>
+</section>
+
+<div class="callout info"><div class="callout-title">怎么读这一页</div><p>对照 <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/t4_matmul.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/t4_matmul.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>t4_matmul.py</a> 读。建议先看 <a href="c4_gemm.html">C4 讲解</a>，这一页会经常拿 C4 来对比：哪些事 Triton 替你做了，哪些仍然要你自己决定。</p>
+</div>
+<h3 id="t4_matmul-1">① 先看全貌：每个 program 一个 C tile</h3>
+<p>和 C4 的 v2 一样：每个 program 负责 C 的一个 BLOCK_M × BLOCK_N 的 tile，沿 K 方向每次取 A 的 BLOCK_M × BLOCK_K 块和 B 的 BLOCK_K × BLOCK_N 块，累加到 fp32 的 acc 里。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>事情</th>
+<th>C4（CUDA 手写）</th>
+<th>T4（Triton）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>tile 读进 shared memory</td>
+<td>自己写 e 循环、自己 <code>__syncthreads()</code></td>
+<td><code>tl.load</code> 一个二维指针块，编译器决定放哪</td>
+</tr>
+<tr>
+<td>线程到输出的映射</td>
+<td>自己算 <code>tid % 16</code>、<code>tid / 16</code></td>
+<td>编译器按 layout 分</td>
+</tr>
+<tr>
+<td>内层乘加</td>
+<td>4×4 外积，FP32 CUDA core</td>
+<td><code>tl.dot</code>，<strong>Tensor Core</strong>（mma / wgmma）</td>
+</tr>
+<tr>
+<td>预取下一块</td>
+<td>没做（C4 的“测完之后”里提到双缓冲）</td>
+<td><code>num_stages</code> 一个参数</td>
+</tr>
+<tr>
+<td>tile 尺寸</td>
+<td>写死 64×64×16</td>
+<td>autotune 从几个候选里选</td>
+</tr>
+<tr>
+<td>program 的顺序</td>
+<td>按 blockIdx 行主序</td>
+<td><strong>分组顺序</strong>，提高 L2 命中（你自己写）</td>
+</tr>
+</tbody>
+</table></div>
+
+<figure class="flow"><div class="flow-head">一个 program 的四步<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;一个 program 的四步&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;id&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;① 我负责哪个 tile&quot;, &quot;s&quot;: &quot;pid → (pid_m, pid_n)&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;ptr&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;② 二维指针块&quot;, &quot;s&quot;: &quot;a_ptrs、b_ptrs&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;loop&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;③ 沿 K 循环&quot;, &quot;s&quot;: &quot;load → tl.dot → 指针后移&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.1}, {&quot;id&quot;: &quot;epi&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;④ epilogue&quot;, &quot;s&quot;: &quot;acc 转 dtype，store&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;id&quot;, &quot;b&quot;: &quot;ptr&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;ptr&quot;, &quot;b&quot;: &quot;loop&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;loop&quot;, &quot;b&quot;: &quot;epi&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 230.0, &quot;nw&quot;: 175.0}}"></div><figcaption>第 ③ 步里 a 和 b 的 load 会被编译器放进 shared memory，并按 num_stages 提前若干轮发出，tl.dot 从 shared memory 取数喂给 Tensor Core。这些都是 C4 里你手写的东西。</figcaption></figure>
+<h3 id="t4_matmul-2">② 分组顺序：program 和 tile 怎么对应</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/t4_matmul.py#L24-L32" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/t4_matmul.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>24–32 行</a></p>
+<pre><code class="language-python">num_pid_in_group = GROUP_M * num_pid_n
+group_id     = pid // num_pid_in_group
+first_pid_m  = group_id * GROUP_M
+group_size_m = min(num_pid_m - first_pid_m, GROUP_M)   # 最后一组可能不满
+pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+pid_n = (pid % num_pid_in_group) // group_size_m
+</code></pre>
+<p>这几行只是把一维的 <code>pid</code> 换算成 tile 的 (行, 列)。最直接的换算是行主序（<code>pid_m = pid // num_pid_n</code>，<code>pid_n = pid % num_pid_n</code>），分组顺序则是<strong>每 GROUP_M 行 tile 为一组，组内先往下走、再往右走</strong>。</p>
+<p>C 被切成 4×4 个 tile，GROUP_M = 2，每格里写的是负责它的 pid：</p>
+
+<div style="display:flex; gap:28px; flex-wrap:wrap">
+<div><p class="legend">行主序</p>
+<div class="cells" style="grid-template-columns: repeat(4, 52px)">
+<div class="c0">0</div><div class="c0">1</div><div class="c0">2</div><div class="c0">3</div>
+<div>4</div><div>5</div><div>6</div><div>7</div>
+<div>8</div><div>9</div><div>10</div><div>11</div>
+<div>12</div><div>13</div><div>14</div><div>15</div>
+</div></div>
+<div><p class="legend">分组顺序（GROUP_M = 2）</p>
+<div class="cells" style="grid-template-columns: repeat(4, 52px)">
+<div class="c2">0</div><div class="c2">2</div><div>4</div><div>6</div>
+<div class="c2">1</div><div class="c2">3</div><div>5</div><div>7</div>
+<div class="c1">8</div><div class="c1">10</div><div class="c1">12</div><div class="c1">14</div>
+<div class="c1">9</div><div class="c1">11</div><div class="c1">13</div><div class="c1">15</div>
+</div></div>
+</div>
+<p class="legend">左图里 pid 0–3 是第一行的 4 个 tile；右图里 pid 0–3 是左上角的 2×2。下半部分橙色是第二组（group_id = 1）。</p>
+<p>拿 pid = 5 验算右图：num_pid_in_group = 2 × 4 = 8，group_id = 0，first_pid_m = 0，group_size_m = 2；pid_m = 0 + (5 % 8) % 2 = 1，pid_n = (5 % 8) // 2 = 2。所以 pid 5 负责第 1 行第 2 列，和图里一致。</p>
+<p><strong>为什么这样更快：</strong> 假设 GPU 同时在跑 pid 0–3 这 4 个 program。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>顺序</th>
+<th>同时在跑的 tile</th>
+<th>需要 A 的哪几行块</th>
+<th>需要 B 的哪几列块</th>
+<th>一共要从显存拉几个 panel</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>行主序</td>
+<td>(0,0) (0,1) (0,2) (0,3)</td>
+<td>1 个</td>
+<td>4 个</td>
+<td>5</td>
+</tr>
+<tr>
+<td>分组</td>
+<td>(0,0) (1,0) (0,1) (1,1)</td>
+<td>2 个</td>
+<td>2 个</td>
+<td>4</td>
+</tr>
+</tbody>
+</table></div>
+<p>同时运行的 program 数越多，差距越大。真实场景里同时运行的是几百个 program，行主序会让它们需要一整行 B 的 panel，L2 装不下，就会反复从显存读。分组之后，同时运行的 program 集中在一个近似正方形的区域里，A、B 的 panel 都能留在 L2 里被重复使用。题目页建议把 GROUP_M 改成 1 来对比 L2 命中率。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 印刷厂排版</div><p>印刷厂要印一面墙那么大的海报，切成 16 块，每块需要从仓库调一卷“横向颜料”（A 的一行）和一卷“纵向颜料”（B 的一列）。工作台旁边的架子（L2）只放得下几卷。如果按行一块块印，印完第一行就用掉了 4 卷纵向颜料，架子放不下，后面又得回仓库取。按 2×2 的小方块印，同样印 4 块只要 2 卷横向加 2 卷纵向，架子上的颜料被反复用到。</p>
+</div>
+<h3 id="t4_matmul-3">③ 二维指针块：广播出来的</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/t4_matmul.py#L35-L39" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/t4_matmul.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>35–39 行</a></p>
+<pre><code class="language-python">offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)       # [BLOCK_M]
+offs_k = tl.arange(0, BLOCK_K)                         # [BLOCK_K]
+a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak   # [BLOCK_M, BLOCK_K]
+</code></pre>
+<p><code>offs_m[:, None]</code> 是一列（形状 <code>[BLOCK_M, 1]</code>），<code>offs_k[None, :]</code> 是一行（<code>[1, BLOCK_K]</code>），两者相加按 NumPy 的规则<strong>广播</strong>成 <code>[BLOCK_M, BLOCK_K]</code> 的矩阵。每个格子是 A 里对应元素的地址。</p>
+<p>BLOCK_M = BLOCK_K = 4，A 是 <code>[M, 8]</code> 的行优先矩阵（stride_am = 8，stride_ak = 1），pid_m = 0 时：</p>
+
+<div class="strip-scroll"><div class="cells" style="grid-template-columns: 130px repeat(4, 60px); min-width: 400px">
+<div class="lbl"></div><div class="c1">k=0</div><div class="c1">k=1</div><div class="c1">k=2</div><div class="c1">k=3</div>
+<div class="c0">m=0 → 0</div><div>0</div><div>1</div><div>2</div><div>3</div>
+<div class="c0">m=1 → 8</div><div>8</div><div>9</div><div>10</div><div>11</div>
+<div class="c0">m=2 → 16</div><div>16</div><div>17</div><div>18</div><div>19</div>
+<div class="c0">m=3 → 24</div><div>24</div><div>25</div><div>26</div><div>27</div>
+</div></div>
+<p class="legend">格子里是 a_ptrs 相对 a_ptr 的偏移（以元素为单位）。左列是 offs_m × stride_am，上行是 offs_k × stride_ak，每格 = 行头 + 列头。</p>
+<p><strong>为什么要传 stride，而不是假设连续</strong>：传 <code>b.t()</code> 这样的转置视图进来，<code>stride_bk = 1</code>、<code>stride_bn = K</code>，同一套代码照样对，不需要先 <code>.contiguous()</code> 拷贝一份。PyTorch 的 <code>Linear</code> 存的权重就是 <code>[N, K]</code>，乘的时候需要的正是它的转置视图。</p>
+<h3 id="t4_matmul-4">④ 主循环：load、tl.dot、指针后移</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/t4_matmul.py#L42-L50" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/t4_matmul.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>42–50 行</a></p>
+<pre><code class="language-python">acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+for k in range(0, tl.cdiv(K, BLOCK_K)):
+    k_remaining = K - k * BLOCK_K
+    a = tl.load(a_ptrs, mask=(offs_m[:, None] &lt; M) &amp; (offs_k[None, :] &lt; k_remaining), other=0.0)
+    b = tl.load(b_ptrs, mask=(offs_k[:, None] &lt; k_remaining) &amp; (offs_n[None, :] &lt; N), other=0.0)
+    acc = tl.dot(a, b, acc)
+    a_ptrs += BLOCK_K * stride_ak
+    b_ptrs += BLOCK_K * stride_bk
+</code></pre>
+<ul>
+<li><strong>mask 也是二维广播</strong>：<code>(offs_m[:, None] &lt; M)</code> 是一列 bool，<code>(offs_k[None, :] &lt; k_remaining)</code> 是一行 bool，<code>&amp;</code> 之后是 <code>[BLOCK_M, BLOCK_K]</code> 的 mask。越界填 0，和 C4 的道理一样：0 不影响点积。</li>
+<li><strong><code>k_remaining</code></strong>：最后一轮 K 方向可能不满一个 BLOCK_K。用“还剩多少”来比较，指针只需要往后移，offs_k 不用变。</li>
+<li><strong><code>tl.dot(a, b, acc)</code></strong> 等于 <code>acc += a @ b</code>。fp16 / bf16 输入时编译成 Tensor Core 指令，在 fp32 里累加。第三个参数让编译器把累加融合进 mma 指令。</li>
+<li><strong>指针整体后移</strong>：A 往右移 BLOCK_K 列，B 往下移 BLOCK_K 行。</li>
+</ul>
+<h3>num_stages：软件流水线</h3>
+<p>你写的循环是“读一块、算一块”，但编译器会把 load 提前发出：</p>
+
+<figure class="flow"><div class="flow-head">num_stages = 3 时，第 k 轮在做什么<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;num_stages = 3 时，第 k 轮在做什么&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;c&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;Tensor Core&quot;, &quot;s&quot;: &quot;算第 k 块&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;s1&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;shared memory 槽 1&quot;, &quot;s&quot;: &quot;第 k+1 块已到&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;s2&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;shared memory 槽 2&quot;, &quot;s&quot;: &quot;第 k+2 块在路上&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;s1&quot;, &quot;b&quot;: &quot;c&quot;, &quot;t&quot;: &quot;下一轮用&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;s2&quot;, &quot;b&quot;: &quot;s1&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: true}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 270.0, &quot;nw&quot;: 175.0}}"></div><figcaption>显存读取有几百个周期的延迟。提前发出后面几轮的 load，等真正要用时数据已经在 shared memory 里了，计算和搬运就重叠起来。stage 越多，藏延迟的能力越强，但每个 stage 都要一份 shared memory。</figcaption></figure>
+<p>每个 stage 要存一块 A 和一块 B（fp16 每个元素 2 字节）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>config</th>
+<th>每 stage 的元素</th>
+<th>每 stage 字节</th>
+<th>stages</th>
+<th>共计</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>128 × 256 × 64</td>
+<td>128·64 + 64·256 = 24,576</td>
+<td>48 KB</td>
+<td>3</td>
+<td>144 KB</td>
+</tr>
+<tr>
+<td>128 × 128 × 64</td>
+<td>128·64 + 64·128 = 16,384</td>
+<td>32 KB</td>
+<td>4</td>
+<td>128 KB</td>
+</tr>
+<tr>
+<td>64 × 64 × 32</td>
+<td>64·32 + 32·64 = 4,096</td>
+<td>8 KB</td>
+<td>5</td>
+<td>40 KB</td>
+</tr>
+</tbody>
+</table></div>
+<p>超过 GPU 每个 SM 的 shared memory 上限，这个 config 就会编译失败或被跳过；占用太多，每个 SM 能同时驻留的 program 就少。</p>
+
+<div class="callout analogy"><div class="callout-title">类比 · 流水线上的备料</div><p>厨师（Tensor Core）每做一道菜要用一盘切好的料。如果每次都是做完一道再去冷库取料、切好，厨师大部分时间在等。改成帮厨提前两道菜就开始取料切配，放在灶台旁的备料台上（shared memory 的几个槽），厨师做完一道，下一道的料已经在手边了。备料台越大，能提前准备的菜越多，但厨房的空间是有限的。</p>
+</div>
+<h3 id="t4_matmul-5">⑤ epilogue</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/t4_matmul.py#L53-L55" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/t4_matmul.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>53–55 行</a>：acc 从 fp32 转回 fp16/bf16，用 C 的 stride 算出二维指针块，带 mask 写回。题目页的进阶练习是在这里融合 bias 和激活：<code>c = gelu(acc + bias)</code>，这是 GEMM 融合最常见的形式。</p>
+<h3 id="t4_matmul-6">⑥ autotune 在背后做了什么</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/t4_matmul.py#L60-L70" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/t4_matmul.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>60–70 行</a> · host 端 <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/t4_matmul.py#L84-L93" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/t4_matmul.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>84–93 行</a></p>
+<pre><code class="language-python">matmul_kernel_autotuned = triton.autotune(configs=AUTOTUNE_CONFIGS, key=[&quot;M&quot;, &quot;N&quot;, &quot;K&quot;])(matmul_kernel)
+grid = lambda meta: (triton.cdiv(M, meta[&quot;BLOCK_M&quot;]) * triton.cdiv(N, meta[&quot;BLOCK_N&quot;]),)
+matmul_kernel_autotuned[grid](*args)
+</code></pre>
+
+<figure class="flow"><div class="flow-head">第一次遇到某个 (M, N, K) 时<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;第一次遇到某个 (M, N, K) 时&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;call&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;matmul(a, b)&quot;, &quot;s&quot;: &quot;key = (M, N, K)&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;hit&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;缓存里有吗？&quot;, &quot;s&quot;: &quot;Autotuner.cache&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;bench&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;5 个 config 各跑几次&quot;, &quot;s&quot;: &quot;编译 + 计时&quot;, &quot;k&quot;: &quot;todo&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;best&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;选最快的&quot;, &quot;s&quot;: &quot;写入 cache[key]&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;run&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;用这个 config 启动&quot;, &quot;s&quot;: &quot;grid(meta)&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}], &quot;edges&quot;: [{&quot;a&quot;: &quot;call&quot;, &quot;b&quot;: &quot;hit&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;hit&quot;, &quot;b&quot;: &quot;run&quot;, &quot;t&quot;: &quot;有&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;hit&quot;, &quot;b&quot;: &quot;bench&quot;, &quot;t&quot;: &quot;没有&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;bench&quot;, &quot;b&quot;: &quot;best&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;best&quot;, &quot;b&quot;: &quot;run&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 225.0, &quot;nw&quot;: 175.0}}"></div><figcaption>所以第一次调用某个 shape 很慢（要编译 5 个版本、各跑若干次），之后同一个 shape 就直接用缓存的结果。key 里不包含的参数变了不会重新调优。</figcaption></figure>
+<ul>
+<li><strong>grid 必须是函数</strong>：autotuner 在尝试不同 config 时 BLOCK_M、BLOCK_N 各不相同，program 数也跟着变，所以 grid 要根据 <code>meta</code>（当前 config 的参数）现算。</li>
+<li><strong>CPU 解释器不调优</strong>（85–86 行）：解释器上计时没有意义，直接用一个固定的小 config。</li>
+<li>源码：<a class="src" href="https://github.com/triton-lang/triton/blob/13815585b36280e125dec1f26a22296a1bbecdda/python/triton/runtime/autotuner.py#L19" title="triton-lang/triton @ 1381558 · python/triton/runtime/autotuner.py" target="_blank" rel="noopener"><span class="src-repo">triton</span>Autotuner</a>，查缓存和 benchmark 的逻辑在 <a class="src" href="https://github.com/triton-lang/triton/blob/13815585b36280e125dec1f26a22296a1bbecdda/python/triton/runtime/autotuner.py#L232-L259" title="triton-lang/triton @ 1381558 · python/triton/runtime/autotuner.py" target="_blank" rel="noopener"><span class="src-repo">triton</span>run()</a>。</li>
+</ul>
+<h3 id="t4_matmul-7">⑦ 对照与延伸</h3>
+<ul>
+<li><strong>官方 tutorial 03</strong> 和参考解几乎逐行相同：<a class="src" href="https://github.com/triton-lang/triton/blob/13815585b36280e125dec1f26a22296a1bbecdda/python/tutorials/03-matrix-multiplication.py#L233" title="triton-lang/triton @ 1381558 · python/tutorials/03-matrix-multiplication.py" target="_blank" rel="noopener"><span class="src-repo">triton</span>matmul_kernel</a>，L2 分组的讲解在 <a class="src" href="https://github.com/triton-lang/triton/blob/13815585b36280e125dec1f26a22296a1bbecdda/python/tutorials/03-matrix-multiplication.py#L93-L133" title="triton-lang/triton @ 1381558 · python/tutorials/03-matrix-multiplication.py" target="_blank" rel="noopener"><span class="src-repo">triton</span>“L2 Cache Optimizations” 一节</a>（带图），<a class="src" href="https://github.com/triton-lang/triton/blob/13815585b36280e125dec1f26a22296a1bbecdda/python/tutorials/03-matrix-multiplication.py#L304" title="triton-lang/triton @ 1381558 · python/tutorials/03-matrix-multiplication.py" target="_blank" rel="noopener"><span class="src-repo">triton</span>tl.dot</a>。</li>
+<li><strong>persistent kernel</strong>：program 数等于 SM 数，每个 program 循环处理多个 tile，省掉反复启动 program 的开销：<a class="src" href="https://github.com/triton-lang/triton/blob/13815585b36280e125dec1f26a22296a1bbecdda/python/tutorials/09-persistent-matmul.py#L296" title="triton-lang/triton @ 1381558 · python/tutorials/09-persistent-matmul.py" target="_blank" rel="noopener"><span class="src-repo">triton</span>matmul_kernel_persistent</a>。题目页的面试追问提到这是 cuBLAS 的优势之一。</li>
+<li><strong>grouped GEMM</strong>（一次算很多个不同 shape 的小 GEMM，M2 的 MoE 会用到）：<a class="src" href="https://github.com/triton-lang/triton/blob/13815585b36280e125dec1f26a22296a1bbecdda/python/tutorials/08-grouped-gemm.py" title="triton-lang/triton @ 1381558 · python/tutorials/08-grouped-gemm.py" target="_blank" rel="noopener"><span class="src-repo">triton</span>08-grouped-gemm</a>；<strong>block-scaled GEMM</strong>（M3 的 FP8）：<a class="src" href="https://github.com/triton-lang/triton/blob/13815585b36280e125dec1f26a22296a1bbecdda/python/tutorials/10-block-scaled-matmul.py" title="triton-lang/triton @ 1381558 · python/tutorials/10-block-scaled-matmul.py" target="_blank" rel="noopener"><span class="src-repo">triton</span>10-block-scaled-matmul</a>。</li>
+</ul>
+<h3 id="t4_matmul-8">⑧ 常见坑与自测</h3>
+<ul>
+<li><strong>grid 用了固定的 BLOCK_M</strong>：配合 autotune 时 program 数不对，部分 tile 没人算或者越界。</li>
+<li><strong>只 mask 了 M、N，没 mask K</strong>：K 不是 BLOCK_K 的倍数时读进垃圾值。</li>
+<li><strong>acc 用了 fp16</strong>：大 K 时累加误差很大。Tensor Core 本来就支持 fp32 累加，没有性能损失。</li>
+<li><strong>GROUP_M 的最后一组</strong>：num_pid_m 不是 GROUP_M 的倍数时，最后一组更矮，必须用 <code>group_size_m</code> 而不是 <code>GROUP_M</code> 取模。</li>
+</ul>
+
+<details class="answer"><summary>自测 1：num_pid_m = 3，num_pid_n = 2，GROUP_M = 2。写出 pid 0–5 对应的 (pid_m, pid_n)。</summary><div class="body"><p>num_pid_in_group = 4。第 0 组（pid 0–3）：group_size_m = 2，得到 (0,0) (1,0) (0,1) (1,1)。第 1 组（pid 4–5）：first_pid_m = 2，group_size_m = min(3 − 2, 2) = 1，pid 4 → (2, 0)，pid 5 → (2, 1)。如果第 1 组误用 GROUP_M = 2 取模，pid 5 会算出 pid_m = 3，越界。</p>
+</div></details>
+
+<details class="answer"><summary>自测 2：M = N = K = 4096，config 是 128 × 128 × 64，一共几个 program？每个 program 的主循环跑几轮？</summary><div class="body"><p>(4096/128) × (4096/128) = 32 × 32 = 1024 个 program，每个跑 4096 / 64 = 64 轮。</p>
+</div></details>
+<h3 id="t4_matmul-9">源码与资料索引</h3>
+<p><strong>本仓库</strong>：<a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/t4_matmul.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/t4_matmul.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>solutions/t4_matmul.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/mine/t4_matmul.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · mine/t4_matmul.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>mine/t4_matmul.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/tests/test_t4_matmul.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · tests/test_t4_matmul.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>tests/test_t4_matmul.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/5d70840a62f8d16dda5af8a6b402b4b07c76c93f/content/t4.md" title="kzhou003/gpu-kernel-drills @ 5d70840 · content/t4.md" target="_blank" rel="noopener"><span class="src-repo">drills</span>content/t4.md</a></p>
+<p><strong>Triton</strong>：<a class="src" href="https://github.com/triton-lang/triton/blob/13815585b36280e125dec1f26a22296a1bbecdda/python/tutorials/03-matrix-multiplication.py#L233" title="triton-lang/triton @ 1381558 · python/tutorials/03-matrix-multiplication.py" target="_blank" rel="noopener"><span class="src-repo">triton</span>tutorial 03</a> · <a class="src" href="https://github.com/triton-lang/triton/blob/13815585b36280e125dec1f26a22296a1bbecdda/python/tutorials/09-persistent-matmul.py#L296" title="triton-lang/triton @ 1381558 · python/tutorials/09-persistent-matmul.py" target="_blank" rel="noopener"><span class="src-repo">triton</span>09 persistent</a> · <a class="src" href="https://github.com/triton-lang/triton/blob/13815585b36280e125dec1f26a22296a1bbecdda/python/tutorials/08-grouped-gemm.py" title="triton-lang/triton @ 1381558 · python/tutorials/08-grouped-gemm.py" target="_blank" rel="noopener"><span class="src-repo">triton</span>08 grouped</a> · <a class="src" href="https://github.com/triton-lang/triton/blob/13815585b36280e125dec1f26a22296a1bbecdda/python/triton/runtime/autotuner.py#L19" title="triton-lang/triton @ 1381558 · python/triton/runtime/autotuner.py" target="_blank" rel="noopener"><span class="src-repo">triton</span>Autotuner</a> · API：<a href="https://triton-lang.org/main/python-api/generated/triton.language.dot.html">tl.dot</a> · <a href="https://triton-lang.org/main/python-api/generated/triton.autotune.html">triton.autotune</a> · <a href="https://triton-lang.org/main/python-api/generated/triton.Config.html">triton.Config</a></p>
+<p><strong>延伸阅读</strong>：<a href="https://siboehm.com/articles/22/CUDA-MMM">Simon Boehm · How to Optimize a CUDA Matmul Kernel</a>（C4 → cuBLAS 的每一步） · <a href="https://github.com/NVIDIA/cutlass">CUTLASS</a></p>
+
+</main>
+<script>
+// ---------- React-Flow-style diagram renderer (pure SVG, works offline and in print) ----------
+(function () {
+  var NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, parent) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+  function txt(parent, x, y, s, cls, anchor) { var t = el("text", { x: x, y: y, "class": cls, "text-anchor": anchor || "middle" }, parent); t.textContent = s; return t; }
+  function render(host, spec) {
+    var cfg = spec.cfg || {}, CW = cfg.cw || 200, RH = cfg.rh || 88, NW = cfg.nw || 160, PAD = 26;
+    var N = {}, maxX = 0, maxY = 0;
+    spec.nodes.forEach(function (n) {
+      var w = NW * n.w, h = n.s ? 52 : 38, x = PAD + n.c * CW, y = PAD + 14 + n.r * RH;
+      N[n.id] = { n: n, x: x, y: y, w: w, h: h, cx: x + w / 2, cy: y + h / 2 };
+      maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+    });
+    var groups = (spec.groups || []).map(function (g) {
+      var x0 = PAD + g.c0 * CW - 14, y0 = PAD + 14 + g.r0 * RH - 28, x1 = PAD + g.c1 * CW + NW + 14, y1 = PAD + 14 + g.r1 * RH + 52 + 14;
+      maxX = Math.max(maxX, x1); maxY = Math.max(maxY, y1); return { g: g, x0: x0, y0: y0, x1: x1, y1: y1 };
+    });
+    var W = maxX + PAD, H = maxY + PAD;
+    var svg = el("svg", { viewBox: "0 0 " + W + " " + H, width: W, role: "img", "aria-label": spec.title });
+    var uid = "f" + Math.random().toString(36).slice(2, 8);
+    var defs = el("defs", {}, svg);
+    var pat = el("pattern", { id: uid + "dot", width: 16, height: 16, patternUnits: "userSpaceOnUse" }, defs);
+    el("circle", { cx: 1, cy: 1, r: 1, "class": "f-bgdot" }, pat);
+    var bg = el("rect", { x: 0, y: 0, width: W, height: H, fill: "url(#" + uid + "dot)" }, svg);
+    groups.forEach(function (G) {
+      var gg = el("g", { "class": "f-grp" + (G.g.k ? " k-" + G.g.k : "") }, svg);
+      el("rect", { x: G.x0, y: G.y0, width: G.x1 - G.x0, height: G.y1 - G.y0, rx: 10 }, gg);
+      txt(gg, G.x0 + 10, G.y0 + 15, G.g.t, "", "start");
+    });
+    var edgeLayer = el("g", {}, svg), nodeLayer = el("g", {}, svg), labelLayer = el("g", {}, svg);   // labels on top
+    function side(A, B) {
+      var dx = B.cx - A.cx, dy = B.cy - A.cy;
+      if (Math.abs(dx) >= Math.abs(dy) * 0.9) return dx >= 0 ? ["r", "l"] : ["l", "r"];
+      return dy >= 0 ? ["b", "t"] : ["t", "b"];
+    }
+    function port(P, s) { return s === "r" ? [P.x + P.w, P.cy] : s === "l" ? [P.x, P.cy] : s === "t" ? [P.cx, P.y] : [P.cx, P.y + P.h]; }
+    function dir(s) { return s === "r" ? [1, 0] : s === "l" ? [-1, 0] : s === "t" ? [0, -1] : [0, 1]; }
+    var nodeEdges = {};
+    spec.edges.forEach(function (e, i) {
+      var as = e.a.split(":"), bs = e.b.split(":"), A = N[as[0]], B = N[bs[0]];
+      var auto = side(A, B), sa = as[1] || auto[0], sb = bs[1] || auto[1];
+      var p0 = port(A, sa), p3 = port(B, sb), d0 = dir(sa), d3 = dir(sb);
+      var dist = Math.hypot(p3[0] - p0[0], p3[1] - p0[1]), off = Math.max(36, Math.min(140, dist * 0.45));
+      if (sa === sb) off = Math.max(off, 60);                     // U-shaped loop between two ports on the same side
+      var p1 = [p0[0] + d0[0] * off, p0[1] + d0[1] * off], p2 = [p3[0] + d3[0] * (off + 6), p3[1] + d3[1] * (off + 6)];
+      var end = [p3[0] + d3[0] * 7, p3[1] + d3[1] * 7];             // stop before the arrowhead
+      var cls = "f-e" + (e.k ? " k-" + e.k : "") + (e.anim ? " anim" : "") + (e.dash ? " dash" : "");
+      var path = el("path", { d: "M" + p0 + " C" + p1 + " " + p2 + " " + end, "class": cls }, edgeLayer);
+      var ah = el("path", { d: "M" + p3 + " l" + (-d3[0] * 8 + d3[1] * 4.5) + "," + (-d3[1] * 8 + d3[0] * 4.5) + " l" + (-d3[1] * 9) + "," + (d3[0] * 9) + " z",
+        "class": "f-ah" + (e.k ? " k-" + e.k : "") }, edgeLayer);
+      var items = [path, ah];
+      if (e.t) {
+        var t = 0.5, mx = Math.pow(1 - t, 3) * p0[0] + 3 * Math.pow(1 - t, 2) * t * p1[0] + 3 * (1 - t) * t * t * p2[0] + t * t * t * end[0];
+        var my = Math.pow(1 - t, 3) * p0[1] + 3 * Math.pow(1 - t, 2) * t * p1[1] + 3 * (1 - t) * t * t * p2[1] + t * t * t * end[1];
+        var lg = el("g", { "class": "f-el" }, labelLayer);
+        var tw = 12; for (var ci = 0; ci < e.t.length; ci++) tw += e.t.charCodeAt(ci) > 255 ? 11.5 : 6.6; tw = Math.max(24, tw);
+        // label wider than the gap it sits in: lift it above a horizontal edge / beside a vertical one
+        var horiz = (sa === "l" || sa === "r") && (sb === "l" || sb === "r");
+        var gap = horiz ? Math.abs(end[0] - p0[0]) : Math.abs(end[1] - p0[1]);
+        if (horiz && tw > gap - 6) my = Math.min(p0[1], end[1]) - 15;
+        else if (!horiz && sa !== sb && 20 > gap - 4) mx = Math.max(p0[0], end[0]) + tw / 2 + 8;
+        el("rect", { x: mx - tw / 2, y: my - 10, width: tw, height: 18, rx: 5 }, lg);
+        txt(lg, mx, my + 3.5, e.t, "");
+        items.push(lg);
+      }
+      [as[0], bs[0]].forEach(function (id) { (nodeEdges[id] = nodeEdges[id] || []).push({ items: items, other: id === as[0] ? bs[0] : as[0] }); });
+    });
+    var nodeEls = {};
+    spec.nodes.forEach(function (n) {
+      var P = N[n.id], g = el("g", { "class": "f-node" + (n.k ? " k-" + n.k : "") }, nodeLayer);
+      el("rect", { x: P.x, y: P.y, width: P.w, height: P.h, rx: 9, "class": "f-box" }, g);
+      txt(g, P.cx, P.y + (n.s ? 21 : 23.5), n.t, "f-t");
+      if (n.s) txt(g, P.cx, P.y + 39, n.s, "f-s");
+      [["l", P.x, P.cy], ["r", P.x + P.w, P.cy], ["t", P.cx, P.y], ["b", P.cx, P.y + P.h]].forEach(function (h) {
+        el("circle", { cx: h[1], cy: h[2], r: 2.6, "class": "f-handle" }, g);
+      });
+      nodeEls[n.id] = g;
+      g.addEventListener("mouseenter", function () {
+        svg.classList.add("f-on"); g.classList.add("hl");
+        (nodeEdges[n.id] || []).forEach(function (c) { c.items.forEach(function (x) { x.classList.add("hl"); }); nodeEls[c.other].classList.add("hl"); });
+      });
+      g.addEventListener("mouseleave", function () {
+        svg.classList.remove("f-on"); svg.querySelectorAll(".hl").forEach(function (x) { x.classList.remove("hl"); });
+      });
+    });
+    host.appendChild(svg);
+    // grow the canvas to whatever was actually drawn (loop edges swing outside the node grid)
+    try {
+      var bb = svg.getBBox(), x0 = Math.min(0, bb.x - 12), y0 = Math.min(0, bb.y - 12);
+      var x1 = Math.max(W, bb.x + bb.width + 12), y1 = Math.max(H, bb.y + bb.height + 12);
+      svg.setAttribute("viewBox", x0 + " " + y0 + " " + (x1 - x0) + " " + (y1 - y0));
+      svg.setAttribute("width", x1 - x0);
+      bg.setAttribute("x", x0); bg.setAttribute("y", y0); bg.setAttribute("width", x1 - x0); bg.setAttribute("height", y1 - y0);
+    } catch (err) {}
+  }
+  document.querySelectorAll(".flow-body[data-flow]").forEach(function (h) {
+    try { render(h, JSON.parse(h.getAttribute("data-flow"))); } catch (e) { h.textContent = "diagram error: " + e; }
+  });
+})();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+(function () {
+  var root = document.documentElement, KEY = "gkd-theme";
+  try { var t = localStorage.getItem(KEY); if (t) root.setAttribute("data-theme", t); } catch (e) {}
+  document.getElementById("theme-btn").addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") ? root.getAttribute("data-theme") === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    var next = dark ? "light" : "dark"; root.setAttribute("data-theme", next);
+    try { localStorage.setItem(KEY, next); } catch (e) {}
+  });
+  document.querySelectorAll(".codebox .copy").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var code = b.closest(".codebox").querySelector("code").innerText;
+      (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject()).then(function () {
+        b.textContent = "已复制"; setTimeout(function () { b.textContent = "复制"; }, 1200);
+      }, function () { b.textContent = "复制失败"; });
+    });
+  });
+  if (window.hljs) document.querySelectorAll("pre code").forEach(function (el) {
+    if (!el.className) el.classList.add("language-plaintext");
+    try { hljs.highlightElement(el); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

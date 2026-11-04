@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M1 讲解：MoE 路由与 moe_align_block_size</title>
+<meta name="description" content="MoE 层的第一步是决定每个 token 去哪几个专家，第二步是把 (token, slot) 按专家排好、每组补齐到 BLOCK_M 的倍数，好让一个 grouped GEMM 一次算完所有专家。这一页用一个 4 token × top-2 × 4 专家的例子把 route 和 align 的每一个中间张量都写出来，逐行讲清楚 bincount、稳定排序、组内排名和 padding 的作用。">
+<style>
+:root {
+  --bg: #f7f6f2; --surface: #ffffff; --surface-2: #f0eee8; --border: #dedad0;
+  --text: #22211e; --muted: #6b675e; --accent: #2f6fdb; --accent-soft: #e3ecfb;
+  --code-bg: #f6f4ef; --l1: #2e8b57; --l1-soft: #e4f3ea; --l2: #b7791f; --l2-soft: #fbf0dc;
+  --l3: #c0392b; --l3-soft: #fbe5e2; --ok: #2e8b57; --bad: #c0392b; --idea: #7a4fc4; --idea-soft: #efe8fb;
+  --tk-kw: #8a3ab9; --tk-str: #2f7d32; --tk-num: #b5541c; --tk-com: #8a867c; --tk-fn: #2457b8; --tk-type: #0f7b8a; --tk-meta: #b7791f;
+  --shadow: 0 1px 2px rgba(0,0,0,.05), 0 2px 8px rgba(0,0,0,.04); --radius: 10px;
+  --font: "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Code", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+  --sidebar: 268px; color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #17181b; --surface: #1f2125; --surface-2: #26282d; --border: #363a41; --text: #e6e4df; --muted: #a19d94;
+  --accent: #7aa7ff; --accent-soft: #23314d; --code-bg: #1b1d21; --l1: #5cc98b; --l1-soft: #1d3327; --l2: #e6b25c; --l2-soft: #3a2f1b;
+  --l3: #f08070; --l3-soft: #3d2320; --ok: #5cc98b; --bad: #f08070; --idea: #b79cf0; --idea-soft: #2c2440;
+  --tk-kw: #d19ef0; --tk-str: #8fd18f; --tk-num: #f0a35e; --tk-com: #7f7b73; --tk-fn: #8cb4ff; --tk-type: #5cc9d6; --tk-meta: #e6b25c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #17181b; --surface: #1f2125; --surface-2: #26282d; --border: #363a41; --text: #e6e4df; --muted: #a19d94;
+  --accent: #7aa7ff; --accent-soft: #23314d; --code-bg: #1b1d21; --l1: #5cc98b; --l1-soft: #1d3327; --l2: #e6b25c; --l2-soft: #3a2f1b;
+  --l3: #f08070; --l3-soft: #3d2320; --ok: #5cc98b; --bad: #f08070; --idea: #b79cf0; --idea-soft: #2c2440;
+  --tk-kw: #d19ef0; --tk-str: #8fd18f; --tk-num: #f0a35e; --tk-com: #7f7b73; --tk-fn: #8cb4ff; --tk-type: #5cc9d6; --tk-meta: #e6b25c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark; }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 60px; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15.5px/1.75 var(--font); overflow-x: hidden; }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+.btn { appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 8px;
+  padding: 3px 10px; font: inherit; font-size: 13px; cursor: pointer; line-height: 1.5; }
+.btn:hover { border-color: var(--accent); }
+
+/* top bar + sidebar */
+.topbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); font-size: 14px; }
+.topbar .home { font-weight: 700; color: var(--text); white-space: nowrap; }
+.topbar .spacer { flex: 1; }
+.topbar .prog-mini { color: var(--muted); font-size: 13px; white-space: nowrap; }
+#nav-btn { display: none; }
+.layout { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); }
+.sidebar { position: sticky; top: 49px; height: calc(100vh - 49px); height: calc(100dvh - 49px); overflow-y: auto;
+  border-right: 1px solid var(--border); padding: 14px 10px 40px 14px; font-size: 13.5px; scrollbar-width: thin; }
+.nav-group { margin: 14px 0 4px; font-size: 11.5px; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.nav-group:first-child { margin-top: 0; }
+.nav-tier { margin: 18px 0 2px; font-size: 11px; font-weight: 800; letter-spacing: .12em; color: var(--accent); text-transform: uppercase; }
+.nav-tier:first-child { margin-top: 0; }
+.tier-banner { margin: 72px 0 -40px; font: 800 13px var(--font); letter-spacing: .3em; color: var(--accent); }
+.nav-item { display: flex; align-items: baseline; gap: 6px; padding: 3px 8px; border-radius: 6px; color: var(--text); line-height: 1.45; }
+.nav-item:hover { background: var(--surface-2); text-decoration: none; }
+.nav-item.cur { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav-item .nid { font: 700 12px var(--mono); color: var(--accent); min-width: 22px; }
+.nav-item .nmin { margin-left: auto; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.nav-item.done .nid::after { content: " ✓"; color: var(--ok); }
+.nav-item.done { color: var(--muted); }
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  #nav-btn { display: inline-block; }
+  .sidebar { position: fixed; z-index: 40; top: 49px; left: 0; width: min(300px, 85vw); background: var(--bg);
+    transform: translateX(-102%); transition: transform .2s; box-shadow: var(--shadow); }
+  body.nav-open .sidebar { transform: none; }
+}
+
+/* page */
+.page { width: 100%; max-width: 940px; margin: 0 auto; padding: 24px 20px 120px; min-width: 0; }
+.hero { margin: 8px 0 28px; }
+.kicker { color: var(--muted); font-size: 13px; letter-spacing: .04em; }
+.hero h1 { font-size: 30px; line-height: 1.3; margin: 4px 0 10px; }
+.lede { color: var(--muted); margin: 4px 0 12px; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.badge { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 999px; padding: 1px 10px; font-size: 12.5px; color: var(--muted); }
+.badge b { color: var(--text); font-weight: 600; }
+.badge code { font-size: 11.5px; }
+.badge.diff-易 b { color: var(--ok); } .badge.diff-中 b { color: var(--l2); } .badge.diff-难 b { color: var(--bad); }
+.done-toggle { cursor: pointer; } .done-toggle input { margin: 0 4px 0 0; }
+.progress { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); margin-top: 10px; }
+.progress > div { height: 100%; background: var(--ok); width: 0; transition: width .3s; }
+
+section.part, section.drill { margin: 0 0 56px; scroll-margin-top: 60px; }
+section.drill { border-top: 3px solid var(--accent); padding-top: 18px; }
+section.part > h2, .drill-head h2 { font-size: 25px; line-height: 1.35; margin: 4px 0 6px; }
+.drill-head .did { font: 700 .85em var(--mono); color: #fff; background: var(--accent); border-radius: 6px; padding: 1px 8px; margin-right: 10px; vertical-align: 2px; }
+.track-banner { margin: 64px 0 28px; padding: 16px 18px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); scroll-margin-top: 60px; }
+.track-banner h2 { margin: 0; font-size: 22px; } .track-banner p { margin: 4px 0 0; color: var(--muted); }
+.mini-toc { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px; margin: 12px 0 18px; font-size: 13.5px; }
+.mini-toc ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 28px; }
+@media (max-width: 640px) { .mini-toc ol { columns: 1; } .page { padding: 16px 16px 96px; } .hero h1 { font-size: 24px; } }
+h3 { font-size: 19px; margin: 34px 0 10px; padding-top: 8px; border-top: 1px solid var(--border); scroll-margin-top: 60px; }
+h4 { font-size: 16px; margin: 20px 0 6px; }
+p, ul, ol { margin: 8px 0; } li { margin: 3px 0; }
+hr { border: 0; border-top: 1px dashed var(--border); margin: 20px 0; }
+blockquote { margin: 12px 0; padding: 6px 14px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+code { font-family: var(--mono); font-size: .86em; background: var(--code-bg); border: 1px solid var(--border); padding: 0 4px; border-radius: 4px; }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto;
+  font-size: 13px; line-height: 1.55; margin: 10px 0; tab-size: 4; }
+pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+:not(pre) > code { overflow-wrap: anywhere; }
+.codebox { margin: 12px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--code-bg); }
+.codebox pre { margin: 0; border: 0; border-radius: 0; max-height: 640px; }
+details.solution .codebox pre { max-height: none; }
+.code-head { display: flex; align-items: center; gap: 10px; padding: 5px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.code-head .path { font-family: var(--mono); font-weight: 600; } .code-head .btn { margin-left: auto; padding: 1px 8px; font-size: 12px; }
+.table-wrap { overflow-x: auto; margin: 10px 0; }
+table { border-collapse: collapse; font-size: 13.5px; min-width: 60%; background: var(--surface); }
+th, td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+th { background: var(--surface-2); font-weight: 600; }
+.callout { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 10px 14px; margin: 14px 0; box-shadow: var(--shadow); }
+.callout > .callout-title { font-weight: 700; margin-bottom: 2px; }
+.callout.info { border-left: 4px solid var(--accent); } .callout.warn { border-left: 4px solid var(--bad); }
+.callout.ok { border-left: 4px solid var(--ok); } .callout.idea { border-left: 4px solid var(--idea); }
+details.hint, details.solution { border: 1px solid var(--border); border-radius: var(--radius); margin: 12px 0; background: var(--surface); box-shadow: var(--shadow); }
+details.hint > summary, details.solution > summary { cursor: pointer; list-style: none; padding: 9px 14px; font-weight: 600;
+  display: flex; align-items: center; gap: 10px; border-radius: var(--radius); flex-wrap: wrap; }
+details > summary::-webkit-details-marker { display: none; }
+details.hint > summary::after, details.solution > summary::after { content: "展开 ▸"; margin-left: auto; font-size: 12px; color: var(--muted); font-weight: 400; }
+details[open].hint > summary::after, details[open].solution > summary::after { content: "收起 ▾"; }
+details[open].hint > summary, details[open].solution > summary { border-bottom: 1px solid var(--border); border-radius: var(--radius) var(--radius) 0 0; }
+details.hint > .body, details.solution > .body { padding: 6px 16px 14px; }
+.lvl { display: inline-block; border-radius: 6px; padding: 0 8px; font-size: 12px; font-weight: 700; color: #fff; }
+details.hint.l1 > summary { background: var(--l1-soft); } details.hint.l1 .lvl { background: var(--l1); }
+details.hint.l2 > summary { background: var(--l2-soft); } details.hint.l2 .lvl { background: var(--l2); }
+details.hint.l3 > summary { background: var(--l3-soft); } details.hint.l3 .lvl { background: var(--l3); }
+details.solution { border-color: var(--bad); } details.solution > summary { background: var(--l3-soft); } details.solution .lvl { background: var(--bad); }
+.spoiler-note { font-size: 12px; color: var(--muted); font-weight: 400; }
+details.answer { border: 1px dashed var(--border); border-radius: 8px; margin: 10px 0; background: var(--surface-2); }
+details.answer > summary { cursor: pointer; padding: 6px 12px; color: var(--accent); font-size: 14px; }
+details.answer > .body { padding: 2px 14px 10px; }
+a.src { display: inline-flex; align-items: baseline; gap: 4px; margin: 1px 0; padding: 0 7px; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--surface); font: 12.5px/1.7 var(--mono); color: var(--accent); white-space: nowrap; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; vertical-align: baseline; }
+a.src:hover { border-color: var(--accent); text-decoration: none; }
+a.src .src-repo { font-size: 10.5px; color: var(--muted); }
+a.src .src-repo::after { content: " ›"; }
+.muted { color: var(--muted); } .small { font-size: 13px; }
+.diagram { overflow-x: auto; margin: 12px 0; } .diagram svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.diagram svg text { fill: var(--text); font-family: var(--font); }
+
+/* syntax highlighting (highlight.js classes, colours follow the theme) */
+.hljs-keyword, .hljs-built_in, .hljs-literal { color: var(--tk-kw); }
+.hljs-string, .hljs-char, .hljs-regexp { color: var(--tk-str); }
+.hljs-number { color: var(--tk-num); }
+.hljs-comment, .hljs-quote { color: var(--tk-com); font-style: italic; }
+.hljs-title, .hljs-title.function_, .hljs-function .hljs-title { color: var(--tk-fn); }
+.hljs-type, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--tk-type); }
+.hljs-meta, .hljs-meta .hljs-keyword, .hljs-decorator { color: var(--tk-meta); }
+.hljs-attr, .hljs-variable, .hljs-params { color: inherit; }
+
+@media print {
+  .topbar, .sidebar { display: none !important; } .layout { display: block; }
+  details { break-inside: avoid; } .codebox pre { max-height: none; }
+}
+
+/* ---------- React-Flow-style diagrams ---------- */
+:root { --f-dot: #d9d5cb; --f-acc: #2f6fdb; --f-acc-bg: #e3ecfb; --f-warn: #b7791f; --f-warn-bg: #fbf0dc; --f-pass: #2e8b57; --f-pass-bg: #e4f3ea;
+  --f-vio: #7a4fc4; --f-vio-bg: #efe8fb; --f-teal: #0f7b8a; --f-teal-bg: #e0f2f4; --f-todo: #c0392b; --f-todo-bg: #fbe5e2; --f-hl: #ffb020; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --f-dot: #30333a; --f-acc: #7aa7ff; --f-acc-bg: #23314d; --f-warn: #e6b25c; --f-warn-bg: #3a2f1b;
+  --f-pass: #5cc98b; --f-pass-bg: #1d3327; --f-vio: #b79cf0; --f-vio-bg: #2c2440; --f-teal: #5cc9d6; --f-teal-bg: #163238; --f-todo: #f08070; --f-todo-bg: #3d2320; } }
+:root[data-theme="dark"] { --f-dot: #30333a; --f-acc: #7aa7ff; --f-acc-bg: #23314d; --f-warn: #e6b25c; --f-warn-bg: #3a2f1b;
+  --f-pass: #5cc98b; --f-pass-bg: #1d3327; --f-vio: #b79cf0; --f-vio-bg: #2c2440; --f-teal: #5cc9d6; --f-teal-bg: #163238; --f-todo: #f08070; --f-todo-bg: #3d2320; }
+figure.flow { margin: 16px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.flow-head { display: flex; align-items: baseline; gap: 10px; padding: 7px 12px; font-weight: 700; font-size: 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.flow-hint { margin-left: auto; font-weight: 400; font-size: 11.5px; color: var(--muted); }
+.flow-body { overflow-x: auto; }
+.flow-body svg { display: block; margin: 0 auto; max-width: 100%; height: auto; font-family: var(--font); }
+figure.flow figcaption { padding: 7px 12px 9px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+.f-bgdot { fill: var(--f-dot); }
+.f-node rect.f-box { fill: var(--surface); stroke: var(--border); stroke-width: 1.3; filter: drop-shadow(0 1px 1.5px rgba(10,20,40,.10)); transition: stroke-width .15s; }
+.f-node text.f-t { fill: var(--text); font-size: 13px; font-weight: 650; }
+.f-node text.f-s { fill: var(--muted); font-size: 11px; font-family: var(--mono); }
+.f-node .f-handle { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; }
+.f-node.k-acc rect.f-box { fill: var(--f-acc-bg); stroke: var(--f-acc); } .f-node.k-warn rect.f-box { fill: var(--f-warn-bg); stroke: var(--f-warn); }
+.f-node.k-pass rect.f-box { fill: var(--f-pass-bg); stroke: var(--f-pass); } .f-node.k-vio rect.f-box { fill: var(--f-vio-bg); stroke: var(--f-vio); }
+.f-node.k-teal rect.f-box { fill: var(--f-teal-bg); stroke: var(--f-teal); } .f-node.k-todo rect.f-box { fill: var(--f-todo-bg); stroke: var(--f-todo); }
+.f-node.k-dark rect.f-box { fill: var(--text); stroke: var(--text); } .f-node.k-dark text { fill: var(--bg) !important; }
+.f-node.k-ghost rect.f-box { fill: none; stroke-dasharray: 4 3; }
+.f-grp rect { fill: none; stroke: var(--border); stroke-width: 1.4; stroke-dasharray: 6 4; }
+.f-grp text { fill: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.f-grp.k-acc rect { fill: var(--f-acc-bg); fill-opacity: .35; stroke: var(--f-acc); } .f-grp.k-warn rect { fill: var(--f-warn-bg); fill-opacity: .45; stroke: var(--f-warn); }
+.f-grp.k-pass rect { fill: var(--f-pass-bg); fill-opacity: .45; stroke: var(--f-pass); } .f-grp.k-vio rect { fill: var(--f-vio-bg); fill-opacity: .45; stroke: var(--f-vio); }
+.f-grp.k-teal rect { fill: var(--f-teal-bg); fill-opacity: .45; stroke: var(--f-teal); } .f-grp.k-todo rect { fill: var(--f-todo-bg); fill-opacity: .45; stroke: var(--f-todo); }
+.f-e { fill: none; stroke: var(--muted); stroke-width: 1.6; transition: opacity .15s; }
+.f-e.k-acc { stroke: var(--f-acc); } .f-e.k-warn { stroke: var(--f-warn); } .f-e.k-pass { stroke: var(--f-pass); }
+.f-e.k-vio { stroke: var(--f-vio); } .f-e.k-teal { stroke: var(--f-teal); } .f-e.k-todo { stroke: var(--f-todo); }
+.f-ah { fill: var(--muted); } .f-ah.k-acc { fill: var(--f-acc); } .f-ah.k-warn { fill: var(--f-warn); } .f-ah.k-pass { fill: var(--f-pass); }
+.f-ah.k-vio { fill: var(--f-vio); } .f-ah.k-teal { fill: var(--f-teal); } .f-ah.k-todo { fill: var(--f-todo); }
+.f-e.dash { stroke-dasharray: 5 4; }
+.f-e.anim { stroke-dasharray: 6 4; animation: fdash .9s linear infinite; }
+@keyframes fdash { to { stroke-dashoffset: -20; } }
+@media (prefers-reduced-motion: reduce) { .f-e.anim { animation: none; } }
+.f-el rect { fill: var(--surface); stroke: var(--border); }
+.f-el text { fill: var(--text); font-size: 11px; font-family: var(--mono); }
+svg.f-on .f-e:not(.hl), svg.f-on .f-el:not(.hl), svg.f-on .f-ah:not(.hl) { opacity: .15; }
+svg.f-on .f-node:not(.hl) { opacity: .4; }
+svg .f-node.hl rect.f-box { stroke-width: 2.4; }
+.callout.analogy { border-left: 4px solid #d9822b; background: color-mix(in srgb, #d9822b 7%, var(--surface)); }
+.callout.analogy > .callout-title { color: #b8691c; }
+
+.page { max-width: 900px; }
+.qnav { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.qnav a { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 1px 10px; font-size: 13px; }
+.qnav a:hover { border-color: var(--accent); text-decoration: none; }
+.q { font-size: 13px; color: var(--muted); margin: -4px 0 10px; }
+.q b { color: var(--text); }
+/* element/thread cell strips */
+.cells { display: grid; gap: 3px; margin: 8px 0; }
+.cells > div { border: 1px solid var(--border); border-radius: 5px; padding: 2px 0; text-align: center; font: 11.5px/1.35 var(--mono); background: var(--surface); }
+.cells > div small { display: block; color: var(--muted); font-size: 10px; }
+.cells .lbl { border: 0; background: none; text-align: right; padding-right: 6px; color: var(--muted); font-family: var(--font); }
+.c0 { background: var(--f-acc-bg) !important; border-color: var(--f-acc) !important; }
+.c1 { background: var(--f-warn-bg) !important; border-color: var(--f-warn) !important; }
+.c2 { background: var(--f-pass-bg) !important; border-color: var(--f-pass) !important; }
+.c3 { background: var(--f-vio-bg) !important; border-color: var(--f-vio) !important; }
+.cx { background: repeating-linear-gradient(135deg, var(--surface), var(--surface) 4px, var(--surface-2) 4px, var(--surface-2) 8px) !important; color: var(--muted); border-style: dashed !important; }
+.strip-scroll { overflow-x: auto; }
+td:first-child code { white-space: nowrap; }
+.legend { font-size: 12.5px; color: var(--muted); margin: 2px 0 10px; }
+.legend span { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; margin: 0 3px 0 10px; border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="home" href="../index.html">Kernel Dev 训练营</a><a href="index.html">/ 提示与讲解</a>
+  <span class="spacer"></span>
+  <button type="button" class="btn" id="theme-btn" title="切换明暗">◐</button>
+</header>
+<main class="page" id="top">
+<section class="hero">
+  <div class="kicker">M1 提示与讲解 · Track M · MoE 与低精度 · 对照 <code>solutions/m1_moe_align.py</code> 逐行读</div>
+  <h1>M1 讲解：MoE 路由与 moe_align_block_size</h1>
+  <p class="lede">MoE 层的第一步是决定每个 token 去哪几个专家，第二步是把 (token, slot) 按专家排好、每组补齐到 BLOCK_M 的倍数，好让一个 grouped GEMM 一次算完所有专家。这一页用一个 4 token × top-2 × 4 专家的例子把 route 和 align 的每一个中间张量都写出来，逐行讲清楚 bincount、稳定排序、组内排名和 padding 的作用。</p>
+  <nav class="qnav"><a href="#m1_moe_align-1">① 先看全貌：为什么要排序和补齐</a><a href="#m1_moe_align-2">② route：softmax → top-k → 重新归一化</a><a href="#m1_moe_align-3">③ moe_align_block_size：一个完整的例子</a><a href="#m1_moe_align-4">④ 对照 vLLM</a><a href="#m1_moe_align-5">⑤ 常见坑与自测</a><a href="#m1_moe_align-6">源码与资料索引</a></nav>
+</section>
+
+<div class="callout info"><div class="callout-title">怎么读这一页</div><p>对照 <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/m1_moe_align.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/m1_moe_align.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>m1_moe_align.py</a> 读。这题是纯 PyTorch，难点不在 GPU 编程，而在<strong>数据布局</strong>：M2 的 grouped GEMM 完全依赖这里产出的三个张量。</p>
+</div>
+<h3 id="m1_moe_align-1">① 先看全貌：为什么要排序和补齐</h3>
+<p>MoE 把 MLP 换成 E 个专家，每个 token 只送到其中 top-k 个。直接写成循环：</p>
+<pre><code class="language-python">for e in range(E):
+    idx = tokens_routed_to(e)
+    y[idx] += w[idx, e] * (x[idx] @ W_e)       # E 次小 GEMM，E 次 kernel launch
+</code></pre>
+<p>E = 64–256 时要启动几百个小 kernel，每个都喂不饱 GPU。高效的做法是<strong>一次 launch</strong> 算完所有专家：把所有 (token, slot) 对按专家排成一列，每个专家的那一段补齐到 BLOCK_M 的整数倍。这样每 BLOCK_M 行组成的块只属于<strong>一个</strong>专家，GEMM kernel 的每个 program 只要知道“我这块是哪个专家”，就能去读对应的权重。</p>
+
+<figure class="flow"><div class="flow-head">从路由到 grouped GEMM<span class="flow-hint">悬停节点查看连接</span></div><div class="flow-body" data-flow="{&quot;title&quot;: &quot;从路由到 grouped GEMM&quot;, &quot;nodes&quot;: [{&quot;id&quot;: &quot;lg&quot;, &quot;c&quot;: 0.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;router logits [T, E]&quot;, &quot;s&quot;: &quot;&quot;, &quot;k&quot;: &quot;acc&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;rt&quot;, &quot;c&quot;: 1.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;route&quot;, &quot;s&quot;: &quot;topk_ids、topk_weights&quot;, &quot;k&quot;: &quot;vio&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;al&quot;, &quot;c&quot;: 2.0, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;moe_align_block_size&quot;, &quot;s&quot;: &quot;按专家排序 + 补齐&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.1}, {&quot;id&quot;: &quot;gm&quot;, &quot;c&quot;: 3.1, &quot;r&quot;: 0.0, &quot;t&quot;: &quot;grouped GEMM（M2）&quot;, &quot;s&quot;: &quot;一次 launch&quot;, &quot;k&quot;: &quot;pass&quot;, &quot;w&quot;: 1.0}, {&quot;id&quot;: &quot;out&quot;, &quot;c&quot;: 3.1, &quot;r&quot;: 1.3, &quot;t&quot;: &quot;三个输出&quot;, &quot;s&quot;: &quot;sorted_ids、expert_ids、总长&quot;, &quot;k&quot;: &quot;warn&quot;, &quot;w&quot;: 1.2}], &quot;edges&quot;: [{&quot;a&quot;: &quot;lg&quot;, &quot;b&quot;: &quot;rt&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;rt&quot;, &quot;b&quot;: &quot;al&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;al&quot;, &quot;b&quot;: &quot;gm&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: false}, {&quot;a&quot;: &quot;al&quot;, &quot;b&quot;: &quot;out&quot;, &quot;t&quot;: &quot;&quot;, &quot;k&quot;: &quot;&quot;, &quot;anim&quot;: false, &quot;dash&quot;: true}], &quot;groups&quot;: [], &quot;cfg&quot;: {&quot;cw&quot;: 210.0, &quot;nw&quot;: 165.0}}"></div><figcaption>M1 产出 sorted_token_ids（每一行算哪个 (token, slot)）和 expert_ids（每一块用哪个专家），M2 的 kernel 只读这两个张量就知道该干什么。</figcaption></figure>
+
+<div class="callout analogy"><div class="callout-title">类比 · 机场托运行李</div><p>每位旅客（token）有两件行李（top-2），分别要去两个不同的城市（专家）。机场不会为每件行李单独派一架飞机，而是先把所有行李按目的地分拣到一起（按专家排序），再装进标准集装箱，每个集装箱装 BLOCK_M 件，装不满的用空箱位补齐（padding）。这样每个集装箱只去一个城市，装货机（GEMM 的 program）拿起一个集装箱，看一眼标签（expert_ids）就知道往哪架飞机上送。</p>
+</div>
+<h3 id="m1_moe_align-2">② route：softmax → top-k → 重新归一化</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/m1_moe_align.py#L18-L22" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/m1_moe_align.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>route（18–22 行）</a></p>
+<pre><code class="language-python">probs = torch.softmax(router_logits.float(), dim=-1)    # 每个 token 在 E 个专家上的概率
+w, ids = torch.topk(probs, top_k, dim=-1)               # 取最大的 k 个
+w = w / w.sum(-1, keepdim=True)                         # 让这 k 个权重加起来等于 1
+</code></pre>
+<p>一个 token、4 个专家，logits = [2.0, 1.0, 0.5, −1.0]，top-2：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>专家 0</th>
+<th>专家 1</th>
+<th>专家 2</th>
+<th>专家 3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>softmax</td>
+<td>0.610</td>
+<td>0.224</td>
+<td>0.136</td>
+<td>0.030</td>
+</tr>
+<tr>
+<td>top-2</td>
+<td><strong>0.610</strong></td>
+<td><strong>0.224</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>重新归一化（÷ 0.834）</td>
+<td><strong>0.731</strong></td>
+<td><strong>0.269</strong></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<p>topk_ids = [0, 1]，topk_weights = [0.731, 0.269]。最后的输出是 <code>0.731 · expert_0(x) + 0.269 · expert_1(x)</code>。</p>
+<p>docstring 提到不同模型的路由方式不同：Mixtral、Qwen-MoE 是这里的“softmax + top-k + 重新归一化”；DeepSeek-V3 用 sigmoid 分数加分组限制（先选专家组，再在组内选专家）。M2 的 GEMM 部分对这些路由方式都一样，只要拿到 topk_ids 和 topk_weights。</p>
+<h3 id="m1_moe_align-3">③ moe_align_block_size：一个完整的例子</h3>
+<p><a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/m1_moe_align.py#L25-L44" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/m1_moe_align.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>moe_align_block_size（25–44 行）</a></p>
+<p>T = 4 个 token，K = 2，E = 4 个专家，block_m = 2：</p>
+<pre><code class="language-text">topk_ids = [[0, 2],      # token 0 去专家 0 和 2
+            [2, 1],      # token 1
+            [0, 2],      # token 2
+            [3, 2]]      # token 3
+</code></pre>
+<h3>第 1 步：展平，给每个 (token, slot) 一个编号</h3>
+<pre><code class="language-python">flat = topk_ids.reshape(-1)          # [0, 2, 2, 1, 0, 2, 3, 2]
+</code></pre>
+<p>编号 f = t × K + k：f = 5 是 token 2 的第 1 个 slot（去专家 2）。后面所有的“token id”其实都是这个 f。</p>
+<h3>第 2 步：每个专家几个，补齐后多长，从哪开始</h3>
+<pre><code class="language-python">counts    = torch.bincount(flat, minlength=E)            # [2, 1, 4, 1]
+padded    = (counts + block_m - 1) // block_m * block_m  # [2, 2, 4, 2]
+pad_start = torch.cumsum(padded, 0) - padded             # [0, 2, 4, 8]
+total     = padded.sum()                                 # 10
+</code></pre>
+<p><code>bincount</code> 数每个值出现几次。<code>cumsum − 自己</code> 是<strong>排他前缀和</strong>：每个专家的段从哪里开始。和 F1 里从页数算 indptr 是同一个技巧。</p>
+<h3>第 3 步：稳定排序，算组内排名</h3>
+<pre><code class="language-python">order = torch.argsort(flat, stable=True)                 # [0, 4, 3, 1, 2, 5, 7, 6]
+sorted_experts = flat[order]                             # [0, 0, 1, 2, 2, 2, 2, 3]
+group_start = torch.cumsum(counts, 0) - counts           # [0, 2, 3, 7]（不补齐时的起点）
+rank = arange(n) - group_start[sorted_experts]           # [0, 1, 0, 0, 1, 2, 3, 0]
+dest = pad_start[sorted_experts] + rank                  # [0, 1, 2, 4, 5, 6, 7, 8]
+</code></pre>
+<ul>
+<li><strong>为什么要稳定排序</strong>：同一个专家内部保持原来的 token 顺序（f = 1, 2, 5, 7，而不是任意顺序）。结果确定、可复现，和 vLLM 的输出也能逐元素对上。</li>
+<li><strong>rank</strong>：排好之后，每个元素在自己专家的组里排第几。</li>
+<li><strong>dest</strong>：在<strong>补齐后</strong>的布局里的位置 = 这个专家段的起点 + 组内排名。</li>
+</ul>
+<h3>第 4 步：写出 sorted_token_ids 和 expert_ids</h3>
+<pre><code class="language-python">sorted_token_ids = torch.full((total,), n)               # 先全部填 padding 值 n = T*K = 8
+sorted_token_ids[dest] = order                           # 再把真实的 f 放到 dest 位置
+expert_ids = repeat_interleave(arange(E), padded // block_m)
+</code></pre>
+
+<div class="strip-scroll"><div class="cells" style="grid-template-columns: 150px repeat(10, minmax(44px, 1fr)); min-width: 660px">
+<div class="lbl">位置</div><div>0</div><div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div><div>7</div><div>8</div><div>9</div>
+<div class="lbl">sorted_token_ids</div><div class="c0">0</div><div class="c0">4</div><div class="c1">3</div><div class="cx">8</div><div class="c2">1</div><div class="c2">2</div><div class="c2">5</div><div class="c2">7</div><div class="c3">6</div><div class="cx">8</div>
+<div class="lbl">对应 token</div><div class="c0">t0</div><div class="c0">t2</div><div class="c1">t1</div><div class="cx">pad</div><div class="c2">t0</div><div class="c2">t1</div><div class="c2">t2</div><div class="c2">t3</div><div class="c3">t3</div><div class="cx">pad</div>
+</div></div>
+<div class="strip-scroll"><div class="cells" style="grid-template-columns: 150px repeat(5, minmax(88px, 1fr)); min-width: 660px">
+<div class="lbl">块（每块 2 行）</div><div>块 0</div><div>块 1</div><div>块 2</div><div>块 3</div><div>块 4</div>
+<div class="lbl">expert_ids</div><div class="c0">专家 0</div><div class="c1">专家 1</div><div class="c2">专家 2</div><div class="c2">专家 2</div><div class="c3">专家 3</div>
+</div></div>
+<p class="legend">token id 是 f = t·K + k，所以 token = f // K。padding 的值是 T·K = 8，一个越界的编号，GEMM 读到它就知道这一行是空的（mask 掉）。专家 1 和专家 3 各只有 1 个 token，各浪费了 1 行。</p>
+<h3>padding 的代价</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th></th>
+<th>这个例子</th>
+<th>真实场景（T = 4096，K = 8，E = 64，block_m = 64）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>真实行数 T·K</td>
+<td>8</td>
+<td>32768</td>
+</tr>
+<tr>
+<td>每个专家平均</td>
+<td>2</td>
+<td>512</td>
+</tr>
+<tr>
+<td>每个专家最多浪费</td>
+<td>block_m − 1 = 1</td>
+<td>63</td>
+</tr>
+<tr>
+<td>浪费比例上限</td>
+<td>E·(block_m−1) / (T·K) = 50%</td>
+<td>64 × 63 / 32768 ≈ 12%</td>
+</tr>
+</tbody>
+</table></div>
+<p>token 越多、block_m 越小，浪费越少；但 block_m 太小 GEMM 的效率又低。decode 时 T 很小，每个专家可能只分到一两个 token，padding 浪费会非常大。这正是 M2 里 decode 场景特别慢的原因。</p>
+<h3 id="m1_moe_align-4">④ 对照 vLLM</h3>
+<p>vLLM 的 Python 接口：<a class="src" href="https://github.com/vllm-project/vllm/blob/b2a9480dc7aa2e8e6aacd09df1a375c34c55f5b5/vllm/model_executor/layers/fused_moe/moe_align_block_size.py#L55" title="vllm-project/vllm @ b2a9480 · vllm/model_executor/layers/fused_moe/moe_align_block_size.py" target="_blank" rel="noopener"><span class="src-repo">vllm</span>moe_align_block_size</a>（注意参数顺序是 <code>topk_ids, block_size, num_experts</code>，和这题不同）。它的 docstring 里还讲了 expert parallel 的处理：不在本卡上的专家，expert_ids 标成 −1，GEMM 直接跳过这些块。</p>
+<p>CUDA 实现在 <a class="src" href="https://github.com/vllm-project/vllm/blob/b2a9480dc7aa2e8e6aacd09df1a375c34c55f5b5/csrc/moe/moe_align_sum_kernels.cu#L371" title="vllm-project/vllm @ b2a9480 · csrc/moe/moe_align_sum_kernels.cu" target="_blank" rel="noopener"><span class="src-repo">vllm</span>moe_align_block_size_kernel</a> 和 <a class="src" href="https://github.com/vllm-project/vllm/blob/b2a9480dc7aa2e8e6aacd09df1a375c34c55f5b5/csrc/moe/moe_align_sum_kernels.cu#L387" title="vllm-project/vllm @ b2a9480 · csrc/moe/moe_align_sum_kernels.cu" target="_blank" rel="noopener"><span class="src-repo">vllm</span>count_and_sort_expert_tokens_kernel</a>：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>参考解（PyTorch）</th>
+<th>vLLM CUDA</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bincount</code></td>
+<td>每个线程对自己负责的 token 做 <a class="src" href="https://github.com/vllm-project/vllm/blob/b2a9480dc7aa2e8e6aacd09df1a375c34c55f5b5/csrc/moe/moe_align_sum_kernels.cu#L184" title="vllm-project/vllm @ b2a9480 · csrc/moe/moe_align_sum_kernels.cu" target="_blank" rel="noopener"><span class="src-repo">vllm</span>atomicAdd 到 shared memory 里的计数</a></td>
+</tr>
+<tr>
+<td><code>cumsum</code>（排他前缀和）</td>
+<td><a class="src" href="https://github.com/vllm-project/vllm/blob/b2a9480dc7aa2e8e6aacd09df1a375c34c55f5b5/csrc/moe/moe_align_sum_kernels.cu#L192-L205" title="vllm-project/vllm @ b2a9480 · csrc/moe/moe_align_sum_kernels.cu" target="_blank" rel="noopener"><span class="src-repo">vllm</span>cub::BlockScan ExclusiveSum</a>，顺便得出 num_tokens_post_pad</td>
+</tr>
+<tr>
+<td><code>argsort(stable=True)</code> + rank</td>
+<td>第二个 kernel 用 <a class="src" href="https://github.com/vllm-project/vllm/blob/b2a9480dc7aa2e8e6aacd09df1a375c34c55f5b5/csrc/moe/moe_align_sum_kernels.cu#L361-L364" title="vllm-project/vllm @ b2a9480 · csrc/moe/moe_align_sum_kernels.cu" target="_blank" rel="noopener"><span class="src-repo">vllm</span>atomicAdd 领取组内位置</a>：<strong>不是</strong>稳定排序，组内顺序不确定</td>
+</tr>
+<tr>
+<td><code>sorted_token_ids</code> 的长度</td>
+<td>vLLM 预先按上界分配，真实长度放在 num_tokens_post_pad 里（参考解 docstring 第 12–13 行说明了这个区别）</td>
+</tr>
+</tbody>
+</table></div>
+<p>vLLM 的 CUDA 版组内顺序不确定，但 GEMM 的结果不受影响：每一行算的是同一个 (token, slot) 和同一个专家的乘积，只是写回的顺序不同。测试是按“每个专家的 token 集合”而不是按位置比较的话就不受影响。</p>
+<h3 id="m1_moe_align-5">⑤ 常见坑与自测</h3>
+<ul>
+<li><strong>把 sorted_token_ids 当成 token 编号</strong>：它是 f = t·K + k，要 <code>// K</code> 才是 token。M2 里读 x 的时候用 <code>f // K</code>，读路由权重的时候用 f 本身。</li>
+<li><strong>padding 值用 −1 或 0</strong>：0 是一个合法的 f，会被当成真实数据算进去；参考解和 vLLM 都用 T·K。</li>
+<li><strong>用 Python 循环按专家拼</strong>：E = 256 时每一步都多几百次 kernel launch，比 GEMM 本身还慢。</li>
+<li><strong>counts 漏了没有 token 的专家</strong>：<code>bincount</code> 要带 <code>minlength=E</code>，否则最后几个专家的计数缺失，后面的 cumsum 全部错位。</li>
+</ul>
+
+<details class="answer"><summary>自测 1：上面的例子改成 block_m = 4，total、sorted_token_ids 和 expert_ids 分别是什么？</summary><div class="body"><p>padded = [4, 4, 4, 4]，total = 16，pad_start = [0, 4, 8, 12]。sorted_token_ids = [0, 4, 8, 8 | 3, 8, 8, 8 | 1, 2, 5, 7 | 6, 8, 8, 8]，expert_ids = [0, 1, 2, 3]。16 行里只有 8 行是真实数据，浪费了一半。</p>
+</div></details>
+
+<details class="answer"><summary>自测 2：sorted_token_ids 某个位置是 7（K = 2），对应哪个 token 的哪个 slot？它的路由权重在 topk_weights 的哪里？</summary><div class="body"><p>f = 7 → token 7 // 2 = 3，slot 7 % 2 = 1。权重是 topk_weights[3, 1]，也就是 topk_weights 展平后的第 7 个。</p>
+</div></details>
+<h3 id="m1_moe_align-6">源码与资料索引</h3>
+<p><strong>本仓库</strong>：<a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/solutions/m1_moe_align.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · solutions/m1_moe_align.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>solutions/m1_moe_align.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/mine/m1_moe_align.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · mine/m1_moe_align.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>mine/m1_moe_align.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/79a9ae5439c3bd509657786e3fd85d1e70810683/tests/test_m1_moe_align.py" title="kzhou003/gpu-kernel-drills @ 79a9ae5 · tests/test_m1_moe_align.py" target="_blank" rel="noopener"><span class="src-repo">drills</span>tests/test_m1_moe_align.py</a> · <a class="src" href="https://github.com/kzhou003/gpu-kernel-drills/blob/5d70840a62f8d16dda5af8a6b402b4b07c76c93f/content/m1.md" title="kzhou003/gpu-kernel-drills @ 5d70840 · content/m1.md" target="_blank" rel="noopener"><span class="src-repo">drills</span>content/m1.md</a></p>
+<p><strong>vLLM</strong>：<a class="src" href="https://github.com/vllm-project/vllm/blob/b2a9480dc7aa2e8e6aacd09df1a375c34c55f5b5/vllm/model_executor/layers/fused_moe/moe_align_block_size.py#L55" title="vllm-project/vllm @ b2a9480 · vllm/model_executor/layers/fused_moe/moe_align_block_size.py" target="_blank" rel="noopener"><span class="src-repo">vllm</span>moe_align_block_size.py</a> · <a class="src" href="https://github.com/vllm-project/vllm/blob/b2a9480dc7aa2e8e6aacd09df1a375c34c55f5b5/csrc/moe/moe_align_sum_kernels.cu#L371" title="vllm-project/vllm @ b2a9480 · csrc/moe/moe_align_sum_kernels.cu" target="_blank" rel="noopener"><span class="src-repo">vllm</span>moe_align_sum_kernels.cu</a> · <a class="src" href="https://github.com/vllm-project/vllm/blob/b2a9480dc7aa2e8e6aacd09df1a375c34c55f5b5/vllm/model_executor/layers/fused_moe/fused_moe.py" title="vllm-project/vllm @ b2a9480 · vllm/model_executor/layers/fused_moe/fused_moe.py" target="_blank" rel="noopener"><span class="src-repo">vllm</span>fused_moe.py</a>（M2）</p>
+<p><strong>论文</strong>：<a href="https://arxiv.org/abs/2401.04088">Mixtral of Experts</a> · <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 技术报告</a>（sigmoid 路由与分组限制）</p>
+
+</main>
+<script>
+// ---------- React-Flow-style diagram renderer (pure SVG, works offline and in print) ----------
+(function () {
+  var NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, parent) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+  function txt(parent, x, y, s, cls, anchor) { var t = el("text", { x: x, y: y, "class": cls, "text-anchor": anchor || "middle" }, parent); t.textContent = s; return t; }
+  function render(host, spec) {
+    var cfg = spec.cfg || {}, CW = cfg.cw || 200, RH = cfg.rh || 88, NW = cfg.nw || 160, PAD = 26;
+    var N = {}, maxX = 0, maxY = 0;
+    spec.nodes.forEach(function (n) {
+      var w = NW * n.w, h = n.s ? 52 : 38, x = PAD + n.c * CW, y = PAD + 14 + n.r * RH;
+      N[n.id] = { n: n, x: x, y: y, w: w, h: h, cx: x + w / 2, cy: y + h / 2 };
+      maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+    });
+    var groups = (spec.groups || []).map(function (g) {
+      var x0 = PAD + g.c0 * CW - 14, y0 = PAD + 14 + g.r0 * RH - 28, x1 = PAD + g.c1 * CW + NW + 14, y1 = PAD + 14 + g.r1 * RH + 52 + 14;
+      maxX = Math.max(maxX, x1); maxY = Math.max(maxY, y1); return { g: g, x0: x0, y0: y0, x1: x1, y1: y1 };
+    });
+    var W = maxX + PAD, H = maxY + PAD;
+    var svg = el("svg", { viewBox: "0 0 " + W + " " + H, width: W, role: "img", "aria-label": spec.title });
+    var uid = "f" + Math.random().toString(36).slice(2, 8);
+    var defs = el("defs", {}, svg);
+    var pat = el("pattern", { id: uid + "dot", width: 16, height: 16, patternUnits: "userSpaceOnUse" }, defs);
+    el("circle", { cx: 1, cy: 1, r: 1, "class": "f-bgdot" }, pat);
+    var bg = el("rect", { x: 0, y: 0, width: W, height: H, fill: "url(#" + uid + "dot)" }, svg);
+    groups.forEach(function (G) {
+      var gg = el("g", { "class": "f-grp" + (G.g.k ? " k-" + G.g.k : "") }, svg);
+      el("rect", { x: G.x0, y: G.y0, width: G.x1 - G.x0, height: G.y1 - G.y0, rx: 10 }, gg);
+      txt(gg, G.x0 + 10, G.y0 + 15, G.g.t, "", "start");
+    });
+    var edgeLayer = el("g", {}, svg), nodeLayer = el("g", {}, svg), labelLayer = el("g", {}, svg);   // labels on top
+    function side(A, B) {
+      var dx = B.cx - A.cx, dy = B.cy - A.cy;
+      if (Math.abs(dx) >= Math.abs(dy) * 0.9) return dx >= 0 ? ["r", "l"] : ["l", "r"];
+      return dy >= 0 ? ["b", "t"] : ["t", "b"];
+    }
+    function port(P, s) { return s === "r" ? [P.x + P.w, P.cy] : s === "l" ? [P.x, P.cy] : s === "t" ? [P.cx, P.y] : [P.cx, P.y + P.h]; }
+    function dir(s) { return s === "r" ? [1, 0] : s === "l" ? [-1, 0] : s === "t" ? [0, -1] : [0, 1]; }
+    var nodeEdges = {};
+    spec.edges.forEach(function (e, i) {
+      var as = e.a.split(":"), bs = e.b.split(":"), A = N[as[0]], B = N[bs[0]];
+      var auto = side(A, B), sa = as[1] || auto[0], sb = bs[1] || auto[1];
+      var p0 = port(A, sa), p3 = port(B, sb), d0 = dir(sa), d3 = dir(sb);
+      var dist = Math.hypot(p3[0] - p0[0], p3[1] - p0[1]), off = Math.max(36, Math.min(140, dist * 0.45));
+      if (sa === sb) off = Math.max(off, 60);                     // U-shaped loop between two ports on the same side
+      var p1 = [p0[0] + d0[0] * off, p0[1] + d0[1] * off], p2 = [p3[0] + d3[0] * (off + 6), p3[1] + d3[1] * (off + 6)];
+      var end = [p3[0] + d3[0] * 7, p3[1] + d3[1] * 7];             // stop before the arrowhead
+      var cls = "f-e" + (e.k ? " k-" + e.k : "") + (e.anim ? " anim" : "") + (e.dash ? " dash" : "");
+      var path = el("path", { d: "M" + p0 + " C" + p1 + " " + p2 + " " + end, "class": cls }, edgeLayer);
+      var ah = el("path", { d: "M" + p3 + " l" + (-d3[0] * 8 + d3[1] * 4.5) + "," + (-d3[1] * 8 + d3[0] * 4.5) + " l" + (-d3[1] * 9) + "," + (d3[0] * 9) + " z",
+        "class": "f-ah" + (e.k ? " k-" + e.k : "") }, edgeLayer);
+      var items = [path, ah];
+      if (e.t) {
+        var t = 0.5, mx = Math.pow(1 - t, 3) * p0[0] + 3 * Math.pow(1 - t, 2) * t * p1[0] + 3 * (1 - t) * t * t * p2[0] + t * t * t * end[0];
+        var my = Math.pow(1 - t, 3) * p0[1] + 3 * Math.pow(1 - t, 2) * t * p1[1] + 3 * (1 - t) * t * t * p2[1] + t * t * t * end[1];
+        var lg = el("g", { "class": "f-el" }, labelLayer);
+        var tw = 12; for (var ci = 0; ci < e.t.length; ci++) tw += e.t.charCodeAt(ci) > 255 ? 11.5 : 6.6; tw = Math.max(24, tw);
+        // label wider than the gap it sits in: lift it above a horizontal edge / beside a vertical one
+        var horiz = (sa === "l" || sa === "r") && (sb === "l" || sb === "r");
+        var gap = horiz ? Math.abs(end[0] - p0[0]) : Math.abs(end[1] - p0[1]);
+        if (horiz && tw > gap - 6) my = Math.min(p0[1], end[1]) - 15;
+        else if (!horiz && sa !== sb && 20 > gap - 4) mx = Math.max(p0[0], end[0]) + tw / 2 + 8;
+        el("rect", { x: mx - tw / 2, y: my - 10, width: tw, height: 18, rx: 5 }, lg);
+        txt(lg, mx, my + 3.5, e.t, "");
+        items.push(lg);
+      }
+      [as[0], bs[0]].forEach(function (id) { (nodeEdges[id] = nodeEdges[id] || []).push({ items: items, other: id === as[0] ? bs[0] : as[0] }); });
+    });
+    var nodeEls = {};
+    spec.nodes.forEach(function (n) {
+      var P = N[n.id], g = el("g", { "class": "f-node" + (n.k ? " k-" + n.k : "") }, nodeLayer);
+      el("rect", { x: P.x, y: P.y, width: P.w, height: P.h, rx: 9, "class": "f-box" }, g);
+      txt(g, P.cx, P.y + (n.s ? 21 : 23.5), n.t, "f-t");
+      if (n.s) txt(g, P.cx, P.y + 39, n.s, "f-s");
+      [["l", P.x, P.cy], ["r", P.x + P.w, P.cy], ["t", P.cx, P.y], ["b", P.cx, P.y + P.h]].forEach(function (h) {
+        el("circle", { cx: h[1], cy: h[2], r: 2.6, "class": "f-handle" }, g);
+      });
+      nodeEls[n.id] = g;
+      g.addEventListener("mouseenter", function () {
+        svg.classList.add("f-on"); g.classList.add("hl");
+        (nodeEdges[n.id] || []).forEach(function (c) { c.items.forEach(function (x) { x.classList.add("hl"); }); nodeEls[c.other].classList.add("hl"); });
+      });
+      g.addEventListener("mouseleave", function () {
+        svg.classList.remove("f-on"); svg.querySelectorAll(".hl").forEach(function (x) { x.classList.remove("hl"); });
+      });
+    });
+    host.appendChild(svg);
+    // grow the canvas to whatever was actually drawn (loop edges swing outside the node grid)
+    try {
+      var bb = svg.getBBox(), x0 = Math.min(0, bb.x - 12), y0 = Math.min(0, bb.y - 12);
+      var x1 = Math.max(W, bb.x + bb.width + 12), y1 = Math.max(H, bb.y + bb.height + 12);
+      svg.setAttribute("viewBox", x0 + " " + y0 + " " + (x1 - x0) + " " + (y1 - y0));
+      svg.setAttribute("width", x1 - x0);
+      bg.setAttribute("x", x0); bg.setAttribute("y", y0); bg.setAttribute("width", x1 - x0); bg.setAttribute("height", y1 - y0);
+    } catch (err) {}
+  }
+  document.querySelectorAll(".flow-body[data-flow]").forEach(function (h) {
+    try { render(h, JSON.parse(h.getAttribute("data-flow"))); } catch (e) { h.textContent = "diagram error: " + e; }
+  });
+})();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+(function () {
+  var root = document.documentElement, KEY = "gkd-theme";
+  try { var t = localStorage.getItem(KEY); if (t) root.setAttribute("data-theme", t); } catch (e) {}
+  document.getElementById("theme-btn").addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") ? root.getAttribute("data-theme") === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    var next = dark ? "light" : "dark"; root.setAttribute("data-theme", next);
+    try { localStorage.setItem(KEY, next); } catch (e) {}
+  });
+  document.querySelectorAll(".codebox .copy").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var code = b.closest(".codebox").querySelector("code").innerText;
+      (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject()).then(function () {
+        b.textContent = "已复制"; setTimeout(function () { b.textContent = "复制"; }, 1200);
+      }, function () { b.textContent = "复制失败"; });
+    });
+  });
+  if (window.hljs) document.querySelectorAll("pre code").forEach(function (el) {
+    if (!el.className) el.classList.add("language-plaintext");
+    try { hljs.highlightElement(el); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>
