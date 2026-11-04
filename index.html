@@ -78,6 +78,9 @@ a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: un
   border-radius: 999px; padding: 1px 10px; font-size: 12.5px; color: var(--muted); }
 .badge b { color: var(--text); font-weight: 600; }
 .badge code { font-size: 11.5px; }
+a.badge.hint-link { color: var(--accent); border-color: var(--accent); }
+a.badge.hint-link b { color: var(--accent); }
+a.badge.hint-link:hover { background: var(--accent-soft); text-decoration: none; }
 .badge.diff-易 b { color: var(--ok); } .badge.diff-中 b { color: var(--l2); } .badge.diff-难 b { color: var(--bad); }
 .done-toggle { cursor: pointer; } .done-toggle input { margin: 0 4px 0 0; }
 .progress { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); margin-top: 10px; }
@@ -207,6 +210,7 @@ svg .f-node.hl rect.f-box { stroke-width: 2.4; }
 <header class="topbar">
   <button type="button" class="btn" id="nav-btn" aria-label="目录">☰ 目录</button>
   <a class="home" href="#top">Kernel Dev 训练营</a>
+  <a href="hints/index.html">提示与讲解</a>
   <span class="spacer"></span>
   <span class="prog-mini" id="prog-mini"></span>
   <button type="button" class="btn" id="theme-btn" title="切换明暗">◐</button>
@@ -254,6 +258,11 @@ svg .f-node.hl rect.f-box { stroke-width: 2.4; }
 <a class="nav-item drill-link" href="#x1" data-id="X1"><span class="nid">X1</span>MLX 自定义 Metal kernel 入门<span class="nmin">30′</span></a>
 <a class="nav-item drill-link" href="#x2" data-id="X2"><span class="nid">X2</span>Metal 归约<span class="nmin">45′</span></a>
 <a class="nav-item drill-link" href="#x3" data-id="X3"><span class="nid">X3</span>Metal GEMM<span class="nmin">75′</span></a>
+<div class="nav-tier">提示与讲解</div><a class="nav-item" href="hints/index.html">全部讲解页（每题一页）</a><div class="nav-group">专题</div>
+<a class="nav-item" href="hints/cute_overview.html">CuTe 专题</a>
+<a class="nav-item" href="hints/flashinfer_overview.html">FlashInfer 原理</a>
+<a class="nav-item" href="hints/metal_vs_cuda.html">Metal / MLX 与 CUDA / Triton</a>
+<a class="nav-item" href="hints/tensorcore_new_isa.html">Tensor Core 与新指令集</a>
 <div class="nav-tier">收尾</div><a class="nav-item" href="#interview">面试题库</a>
 <a class="nav-item" href="#appendix">附录：下一步与参考资料</a>
 </nav>
@@ -1302,7 +1311,7 @@ ms = start.elapsed_time(end) / 100
 <div class="badges">
 <span class="badge">⏱ <b>35 min</b></span>
 <span class="badge diff-易">难度 <b>易</b></span>
-<span class="badge">你写 <code>mine/c1_elementwise.cu</code></span><span class="badge">验收 <code>./check.sh c1</code></span><span class="badge">参考解 <code>solutions/c1_elementwise.cu</code></span>
+<span class="badge">你写 <code>mine/c1_elementwise.cu</code></span><span class="badge">验收 <code>./check.sh c1</code></span><span class="badge">参考解 <code>solutions/c1_elementwise.cu</code></span><a class="badge hint-link" href="hints/c1_elementwise.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="C1">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#c1-1">背景</a></li><li><a href="#c1-2">源码与资料</a></li><li><a href="#c1-3">要用到的知识</a></li><li><a href="#c1-4">图解与类比</a></li><li><a href="#c1-5">题目要求</a></li><li><a href="#c1-6">题干</a></li><li><a href="#c1-7">验收</a></li><li><a href="#c1-8">提示</a></li><li><a href="#c1-9">参考解</a></li><li><a href="#c1-10">测完之后</a></li></ol></nav>
@@ -1684,7 +1693,7 @@ torch::Tensor bias_gelu(torch::Tensor x, torch::Tensor bias) {
 <div class="badges">
 <span class="badge">⏱ <b>45 min</b></span>
 <span class="badge diff-中">难度 <b>中</b></span>
-<span class="badge">你写 <code>mine/c2_reduce_sum.cu</code></span><span class="badge">验收 <code>./check.sh c2</code></span><span class="badge">参考解 <code>solutions/c2_reduce_sum.cu</code></span>
+<span class="badge">你写 <code>mine/c2_reduce_sum.cu</code></span><span class="badge">验收 <code>./check.sh c2</code></span><span class="badge">参考解 <code>solutions/c2_reduce_sum.cu</code></span><a class="badge hint-link" href="hints/c2_reduce_sum.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="C2">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#c2-1">背景</a></li><li><a href="#c2-2">源码与资料</a></li><li><a href="#c2-3">要用到的知识</a></li><li><a href="#c2-4">图解与类比</a></li><li><a href="#c2-5">题目要求</a></li><li><a href="#c2-6">题干</a></li><li><a href="#c2-7">验收</a></li><li><a href="#c2-8">提示</a></li><li><a href="#c2-9">参考解</a></li><li><a href="#c2-10">测完之后</a></li></ol></nav>
@@ -1943,7 +1952,7 @@ torch::Tensor reduce_sum(torch::Tensor x) {
 <div class="badges">
 <span class="badge">⏱ <b>40 min</b></span>
 <span class="badge diff-中">难度 <b>中</b></span>
-<span class="badge">你写 <code>mine/c3_transpose.cu</code></span><span class="badge">验收 <code>./check.sh c3</code></span><span class="badge">参考解 <code>solutions/c3_transpose.cu</code></span>
+<span class="badge">你写 <code>mine/c3_transpose.cu</code></span><span class="badge">验收 <code>./check.sh c3</code></span><span class="badge">参考解 <code>solutions/c3_transpose.cu</code></span><a class="badge hint-link" href="hints/c3_transpose.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="C3">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#c3-1">背景</a></li><li><a href="#c3-2">源码与资料</a></li><li><a href="#c3-3">要用到的知识</a></li><li><a href="#c3-4">图解与类比</a></li><li><a href="#c3-5">题目要求</a></li><li><a href="#c3-6">题干</a></li><li><a href="#c3-7">验收</a></li><li><a href="#c3-8">提示</a></li><li><a href="#c3-9">参考解</a></li><li><a href="#c3-10">测完之后</a></li></ol></nav>
@@ -2186,7 +2195,7 @@ torch::Tensor transpose_tiled(torch::Tensor x) {
 <div class="badges">
 <span class="badge">⏱ <b>90 min</b></span>
 <span class="badge diff-难">难度 <b>难</b></span>
-<span class="badge">你写 <code>mine/c4_gemm.cu</code></span><span class="badge">验收 <code>./check.sh c4</code></span><span class="badge">参考解 <code>solutions/c4_gemm.cu</code></span>
+<span class="badge">你写 <code>mine/c4_gemm.cu</code></span><span class="badge">验收 <code>./check.sh c4</code></span><span class="badge">参考解 <code>solutions/c4_gemm.cu</code></span><a class="badge hint-link" href="hints/c4_gemm.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="C4">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#c4-1">背景</a></li><li><a href="#c4-2">源码与资料</a></li><li><a href="#c4-3">要用到的知识</a></li><li><a href="#c4-4">图解与类比</a></li><li><a href="#c4-5">题目要求</a></li><li><a href="#c4-6">题干</a></li><li><a href="#c4-7">验收</a></li><li><a href="#c4-8">提示</a></li><li><a href="#c4-9">参考解</a></li><li><a href="#c4-10">测完之后</a></li></ol></nav>
@@ -2642,7 +2651,7 @@ torch::Tensor matmul_regtile(torch::Tensor A, torch::Tensor B) {
 <div class="badges">
 <span class="badge">⏱ <b>25 min</b></span>
 <span class="badge diff-易">难度 <b>易</b></span>
-<span class="badge">你写 <code>mine/t1_add_gelu.py</code></span><span class="badge">验收 <code>./check.sh t1</code></span><span class="badge">参考解 <code>solutions/t1_add_gelu.py</code></span>
+<span class="badge">你写 <code>mine/t1_add_gelu.py</code></span><span class="badge">验收 <code>./check.sh t1</code></span><span class="badge">参考解 <code>solutions/t1_add_gelu.py</code></span><a class="badge hint-link" href="hints/t1_add_gelu.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="T1">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#t1-1">背景</a></li><li><a href="#t1-2">源码与资料</a></li><li><a href="#t1-3">要用到的知识</a></li><li><a href="#t1-4">图解与类比</a></li><li><a href="#t1-5">题目要求</a></li><li><a href="#t1-6">题干</a></li><li><a href="#t1-7">验收</a></li><li><a href="#t1-8">提示</a></li><li><a href="#t1-9">参考解</a></li><li><a href="#t1-10">测完之后</a></li></ol></nav>
@@ -2825,7 +2834,7 @@ def add_gelu(x: torch.Tensor, y: torch.Tensor, block_size: int = 1024) -&gt; tor
 <div class="badges">
 <span class="badge">⏱ <b>35 min</b></span>
 <span class="badge diff-中">难度 <b>中</b></span>
-<span class="badge">你写 <code>mine/t2_softmax.py</code></span><span class="badge">验收 <code>./check.sh t2</code></span><span class="badge">参考解 <code>solutions/t2_softmax.py</code></span>
+<span class="badge">你写 <code>mine/t2_softmax.py</code></span><span class="badge">验收 <code>./check.sh t2</code></span><span class="badge">参考解 <code>solutions/t2_softmax.py</code></span><a class="badge hint-link" href="hints/t2_softmax.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="T2">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#t2-1">背景</a></li><li><a href="#t2-2">源码与资料</a></li><li><a href="#t2-3">要用到的知识</a></li><li><a href="#t2-4">图解与类比</a></li><li><a href="#t2-5">题目要求</a></li><li><a href="#t2-6">题干</a></li><li><a href="#t2-7">验收</a></li><li><a href="#t2-8">提示</a></li><li><a href="#t2-9">参考解</a></li><li><a href="#t2-10">测完之后</a></li></ol></nav>
@@ -3044,7 +3053,7 @@ def softmax(x: torch.Tensor) -&gt; torch.Tensor:
 <div class="badges">
 <span class="badge">⏱ <b>40 min</b></span>
 <span class="badge diff-中">难度 <b>中</b></span>
-<span class="badge">你写 <code>mine/t3_layernorm.py</code></span><span class="badge">验收 <code>./check.sh t3</code></span><span class="badge">参考解 <code>solutions/t3_layernorm.py</code></span>
+<span class="badge">你写 <code>mine/t3_layernorm.py</code></span><span class="badge">验收 <code>./check.sh t3</code></span><span class="badge">参考解 <code>solutions/t3_layernorm.py</code></span><a class="badge hint-link" href="hints/t3_layernorm.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="T3">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#t3-1">背景</a></li><li><a href="#t3-2">源码与资料</a></li><li><a href="#t3-3">要用到的知识</a></li><li><a href="#t3-4">图解与类比</a></li><li><a href="#t3-5">题目要求</a></li><li><a href="#t3-6">题干</a></li><li><a href="#t3-7">验收</a></li><li><a href="#t3-8">提示</a></li><li><a href="#t3-9">参考解</a></li><li><a href="#t3-10">测完之后</a></li></ol></nav>
@@ -3315,7 +3324,7 @@ def rms_norm(x: torch.Tensor, w: torch.Tensor, eps: float = 1e-6) -&gt; torch.Te
 <div class="badges">
 <span class="badge">⏱ <b>60 min</b></span>
 <span class="badge diff-中">难度 <b>中</b></span>
-<span class="badge">你写 <code>mine/t4_matmul.py</code></span><span class="badge">验收 <code>./check.sh t4</code></span><span class="badge">参考解 <code>solutions/t4_matmul.py</code></span>
+<span class="badge">你写 <code>mine/t4_matmul.py</code></span><span class="badge">验收 <code>./check.sh t4</code></span><span class="badge">参考解 <code>solutions/t4_matmul.py</code></span><a class="badge hint-link" href="hints/t4_matmul.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="T4">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#t4-1">背景</a></li><li><a href="#t4-2">源码与资料</a></li><li><a href="#t4-3">要用到的知识</a></li><li><a href="#t4-4">grouped ordering 是什么</a></li><li><a href="#t4-5">图解与类比</a></li><li><a href="#t4-6">题目要求</a></li><li><a href="#t4-7">题干</a></li><li><a href="#t4-8">验收</a></li><li><a href="#t4-9">提示</a></li><li><a href="#t4-10">参考解</a></li><li><a href="#t4-11">测完之后</a></li></ol></nav>
@@ -3623,7 +3632,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, config: dict | None = None) -&gt; t
 <div class="badges">
 <span class="badge">⏱ <b>90 min</b></span>
 <span class="badge diff-难">难度 <b>难</b></span>
-<span class="badge">你写 <code>mine/t5_flash_attn.py</code></span><span class="badge">验收 <code>./check.sh t5</code></span><span class="badge">参考解 <code>solutions/t5_flash_attn.py</code></span>
+<span class="badge">你写 <code>mine/t5_flash_attn.py</code></span><span class="badge">验收 <code>./check.sh t5</code></span><span class="badge">参考解 <code>solutions/t5_flash_attn.py</code></span><a class="badge hint-link" href="hints/t5_flash_attn.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="T5">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#t5-1">背景</a></li><li><a href="#t5-2">源码与资料</a></li><li><a href="#t5-3">要用到的知识：online softmax</a></li><li><a href="#t5-4">要用到的知识：形状与掩码</a></li><li><a href="#t5-5">图解与类比</a></li><li><a href="#t5-6">题目要求</a></li><li><a href="#t5-7">题干</a></li><li><a href="#t5-8">验收</a></li><li><a href="#t5-9">提示</a></li><li><a href="#t5-10">参考解</a></li><li><a href="#t5-11">测完之后</a></li></ol></nav>
@@ -3952,7 +3961,7 @@ def flash_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, causal: b
 <div class="badges">
 <span class="badge">⏱ <b>35 min</b></span>
 <span class="badge diff-易">难度 <b>易</b></span>
-<span class="badge">你写 <code>mine/l1_paged_kv_write.py</code></span><span class="badge">验收 <code>./check.sh l1</code></span><span class="badge">参考解 <code>solutions/l1_paged_kv_write.py</code></span>
+<span class="badge">你写 <code>mine/l1_paged_kv_write.py</code></span><span class="badge">验收 <code>./check.sh l1</code></span><span class="badge">参考解 <code>solutions/l1_paged_kv_write.py</code></span><a class="badge hint-link" href="hints/l1_paged_kv_write.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="L1">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#l1-1">背景</a></li><li><a href="#l1-2">源码与资料</a></li><li><a href="#l1-3">要用到的知识</a></li><li><a href="#l1-4">图解与类比</a></li><li><a href="#l1-5">题目要求</a></li><li><a href="#l1-6">题干</a></li><li><a href="#l1-7">验收</a></li><li><a href="#l1-8">提示</a></li><li><a href="#l1-9">参考解</a></li><li><a href="#l1-10">测完之后</a></li></ol></nav>
@@ -4197,7 +4206,7 @@ def reshape_and_cache(key: torch.Tensor, value: torch.Tensor, k_cache: torch.Ten
 <div class="badges">
 <span class="badge">⏱ <b>60 min</b></span>
 <span class="badge diff-难">难度 <b>难</b></span>
-<span class="badge">你写 <code>mine/l2_paged_decode.py</code></span><span class="badge">验收 <code>./check.sh l2</code></span><span class="badge">参考解 <code>solutions/l2_paged_decode.py</code></span>
+<span class="badge">你写 <code>mine/l2_paged_decode.py</code></span><span class="badge">验收 <code>./check.sh l2</code></span><span class="badge">参考解 <code>solutions/l2_paged_decode.py</code></span><a class="badge hint-link" href="hints/l2_paged_decode.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="L2">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#l2-1">背景</a></li><li><a href="#l2-2">源码与资料</a></li><li><a href="#l2-3">要用到的知识</a></li><li><a href="#l2-4">图解与类比</a></li><li><a href="#l2-5">题目要求</a></li><li><a href="#l2-6">题干</a></li><li><a href="#l2-7">验收</a></li><li><a href="#l2-8">提示</a></li><li><a href="#l2-9">参考解</a></li><li><a href="#l2-10">测完之后</a></li></ol></nav>
@@ -4531,7 +4540,7 @@ def paged_decode_attention(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torc
 <div class="badges">
 <span class="badge">⏱ <b>60 min</b></span>
 <span class="badge diff-难">难度 <b>难</b></span>
-<span class="badge">你写 <code>mine/l3_split_kv_decode.py</code></span><span class="badge">验收 <code>./check.sh l3</code></span><span class="badge">参考解 <code>solutions/l3_split_kv_decode.py</code></span>
+<span class="badge">你写 <code>mine/l3_split_kv_decode.py</code></span><span class="badge">验收 <code>./check.sh l3</code></span><span class="badge">参考解 <code>solutions/l3_split_kv_decode.py</code></span><a class="badge hint-link" href="hints/l3_split_kv_decode.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="L3">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#l3-1">背景</a></li><li><a href="#l3-2">源码与资料</a></li><li><a href="#l3-3">要用到的知识</a></li><li><a href="#l3-4">图解与类比</a></li><li><a href="#l3-5">题目要求</a></li><li><a href="#l3-6">题干</a></li><li><a href="#l3-7">验收</a></li><li><a href="#l3-8">提示</a></li><li><a href="#l3-9">参考解</a></li><li><a href="#l3-10">测完之后</a></li></ol></nav>
@@ -4884,7 +4893,7 @@ def split_kv_decode_attention(q: torch.Tensor, k_cache: torch.Tensor, v_cache: t
 <div class="badges">
 <span class="badge">⏱ <b>40 min</b></span>
 <span class="badge diff-易">难度 <b>易</b></span>
-<span class="badge">你写 <code>mine/f1_flashinfer_paged.py</code></span><span class="badge">验收 <code>./check.sh f1</code></span><span class="badge">参考解 <code>solutions/f1_flashinfer_paged.py</code></span>
+<span class="badge">你写 <code>mine/f1_flashinfer_paged.py</code></span><span class="badge">验收 <code>./check.sh f1</code></span><span class="badge">参考解 <code>solutions/f1_flashinfer_paged.py</code></span><a class="badge hint-link" href="hints/f1_flashinfer_paged.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="F1">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#f1-1">背景</a></li><li><a href="#f1-2">源码与资料</a></li><li><a href="#f1-3">要用到的知识</a></li><li><a href="#f1-4">图解与类比</a></li><li><a href="#f1-5">题目要求</a></li><li><a href="#f1-6">题干</a></li><li><a href="#f1-7">验收</a></li><li><a href="#f1-8">提示</a></li><li><a href="#f1-9">参考解</a></li><li><a href="#f1-10">测完之后</a></li></ol></nav>
@@ -5153,7 +5162,7 @@ def flashinfer_decode(q, k_cache, v_cache, block_tables, context_lens, workspace
 <div class="badges">
 <span class="badge">⏱ <b>40 min</b></span>
 <span class="badge diff-中">难度 <b>中</b></span>
-<span class="badge">你写 <code>mine/f2_merge_state.py</code></span><span class="badge">验收 <code>./check.sh f2</code></span><span class="badge">参考解 <code>solutions/f2_merge_state.py</code></span>
+<span class="badge">你写 <code>mine/f2_merge_state.py</code></span><span class="badge">验收 <code>./check.sh f2</code></span><span class="badge">参考解 <code>solutions/f2_merge_state.py</code></span><a class="badge hint-link" href="hints/f2_merge_state.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="F2">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#f2-1">背景</a></li><li><a href="#f2-2">源码与资料</a></li><li><a href="#f2-3">要用到的知识：以 2 为底的 LSE</a></li><li><a href="#f2-4">图解与类比</a></li><li><a href="#f2-5">题目要求</a></li><li><a href="#f2-6">题干</a></li><li><a href="#f2-7">验收</a></li><li><a href="#f2-8">提示</a></li><li><a href="#f2-9">参考解</a></li><li><a href="#f2-10">测完之后</a></li></ol></nav>
@@ -5449,7 +5458,7 @@ def merge_states(v, s):
 <div class="badges">
 <span class="badge">⏱ <b>35 min</b></span>
 <span class="badge diff-中">难度 <b>中</b></span>
-<span class="badge">你写 <code>mine/f3_fused_norm_act.py</code></span><span class="badge">验收 <code>./check.sh f3</code></span><span class="badge">参考解 <code>solutions/f3_fused_norm_act.py</code></span>
+<span class="badge">你写 <code>mine/f3_fused_norm_act.py</code></span><span class="badge">验收 <code>./check.sh f3</code></span><span class="badge">参考解 <code>solutions/f3_fused_norm_act.py</code></span><a class="badge hint-link" href="hints/f3_fused_norm_act.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="F3">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#f3-1">背景</a></li><li><a href="#f3-2">源码与资料</a></li><li><a href="#f3-3">要用到的知识</a></li><li><a href="#f3-4">图解与类比</a></li><li><a href="#f3-5">题目要求</a></li><li><a href="#f3-6">题干</a></li><li><a href="#f3-7">验收</a></li><li><a href="#f3-8">提示</a></li><li><a href="#f3-9">参考解</a></li><li><a href="#f3-10">测完之后</a></li></ol></nav>
@@ -5710,7 +5719,7 @@ def silu_and_mul(x: torch.Tensor) -&gt; torch.Tensor:
 <div class="badges">
 <span class="badge">⏱ <b>60 min</b></span>
 <span class="badge diff-难">难度 <b>难</b></span>
-<span class="badge">你写 <code>mine/f4_topk_topp_renorm.py</code></span><span class="badge">验收 <code>./check.sh f4</code></span><span class="badge">参考解 <code>solutions/f4_topk_topp_renorm.py</code></span>
+<span class="badge">你写 <code>mine/f4_topk_topp_renorm.py</code></span><span class="badge">验收 <code>./check.sh f4</code></span><span class="badge">参考解 <code>solutions/f4_topk_topp_renorm.py</code></span><a class="badge hint-link" href="hints/f4_topk_topp_renorm.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="F4">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#f4-1">背景</a></li><li><a href="#f4-2">源码与资料</a></li><li><a href="#f4-3">要用到的知识：对浮点位模式二分</a></li><li><a href="#f4-4">图解与类比</a></li><li><a href="#f4-5">题目要求</a></li><li><a href="#f4-6">题干</a></li><li><a href="#f4-7">验收</a></li><li><a href="#f4-8">提示</a></li><li><a href="#f4-9">参考解</a></li><li><a href="#f4-10">测完之后</a></li></ol></nav>
@@ -6046,7 +6055,7 @@ def top_p_renorm_probs(probs: torch.Tensor, top_p) -&gt; torch.Tensor:
 <div class="badges">
 <span class="badge">⏱ <b>180 min</b></span>
 <span class="badge diff-中">难度 <b>中</b></span>
-<span class="badge">实践 · 在 FlashInfer 仓库里动手，没有 check.sh</span>
+<span class="badge">实践 · 在 FlashInfer 仓库里动手，没有 check.sh</span><a class="badge hint-link" href="hints/f5_flashinfer_contrib.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="F5">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#f5-1">背景：为什么是 FlashInfer</a></li><li><a href="#f5-2">源码与资料</a></li><li><a href="#f5-3">源码地图</a></li><li><a href="#f5-4">图解与类比</a></li><li><a href="#f5-5">Lab 1：开发环境</a></li><li><a href="#f5-6">Lab 2：沿一个算子追到底（RMSNorm）</a></li><li><a href="#f5-7">Lab 3：用官方工具做 benchmark</a></li><li><a href="#f5-8">Lab 4：选一个贡献方向</a></li><li><a href="#f5-9">新算子的标准流程（来自项目的 CLAUDE.md）</a></li><li><a href="#f5-10">PR 规范（最常被忽略的几条）</a></li><li><a href="#f5-11">自检清单</a></li></ol></nav>
@@ -6235,7 +6244,7 @@ python benchmarks/flashinfer_benchmark.py \
 <div class="badges">
 <span class="badge">⏱ <b>45 min</b></span>
 <span class="badge diff-中">难度 <b>中</b></span>
-<span class="badge">你写 <code>mine/g1_layouts.py</code></span><span class="badge">验收 <code>./check.sh g1</code></span><span class="badge">参考解 <code>solutions/g1_layouts.py</code></span>
+<span class="badge">你写 <code>mine/g1_layouts.py</code></span><span class="badge">验收 <code>./check.sh g1</code></span><span class="badge">参考解 <code>solutions/g1_layouts.py</code></span><a class="badge hint-link" href="hints/g1_layouts.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="G1">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#g1-1">背景</a></li><li><a href="#g1-2">源码与资料</a></li><li><a href="#g1-3">要用到的知识：BlockedLayout</a></li><li><a href="#g1-4">要用到的知识：SliceLayout、归约与合并访存</a></li><li><a href="#g1-5">图解与类比</a></li><li><a href="#g1-6">题目要求</a></li><li><a href="#g1-7">题干</a></li><li><a href="#g1-8">验收</a></li><li><a href="#g1-9">提示</a></li><li><a href="#g1-10">参考解</a></li><li><a href="#g1-11">测完之后：把它和真实编译结果对上</a></li></ol></nav>
@@ -6725,7 +6734,7 @@ print(k.asm[&quot;ttgir&quot;])   # 找 #blocked = #ttg.blocked&lt;{sizePerThrea
 <div class="badges">
 <span class="badge">⏱ <b>60 min</b></span>
 <span class="badge diff-难">难度 <b>难</b></span>
-<span class="badge">你写 <code>mine/g2_cute_layout.py</code></span><span class="badge">验收 <code>./check.sh g2</code></span><span class="badge">参考解 <code>solutions/g2_cute_layout.py</code></span>
+<span class="badge">你写 <code>mine/g2_cute_layout.py</code></span><span class="badge">验收 <code>./check.sh g2</code></span><span class="badge">参考解 <code>solutions/g2_cute_layout.py</code></span><a class="badge hint-link" href="hints/g2_cute_layout.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="G2">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#g2-1">背景</a></li><li><a href="#g2-2">源码与资料</a></li><li><a href="#g2-3">要用到的知识</a></li><li><a href="#g2-4">图解与类比</a></li><li><a href="#g2-5">题目要求</a></li><li><a href="#g2-6">题干</a></li><li><a href="#g2-7">验收</a></li><li><a href="#g2-8">提示</a></li><li><a href="#g2-9">参考解</a></li><li><a href="#g2-10">测完之后</a></li></ol></nav>
@@ -7163,7 +7172,7 @@ def logical_divide(a: Layout, tiler: Layout) -&gt; Layout:
 <div class="badges">
 <span class="badge">⏱ <b>40 min</b></span>
 <span class="badge diff-中">难度 <b>中</b></span>
-<span class="badge">你写 <code>mine/m1_moe_align.py</code></span><span class="badge">验收 <code>./check.sh m1</code></span><span class="badge">参考解 <code>solutions/m1_moe_align.py</code></span>
+<span class="badge">你写 <code>mine/m1_moe_align.py</code></span><span class="badge">验收 <code>./check.sh m1</code></span><span class="badge">参考解 <code>solutions/m1_moe_align.py</code></span><a class="badge hint-link" href="hints/m1_moe_align.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="M1">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#m1-1">背景</a></li><li><a href="#m1-2">源码与资料</a></li><li><a href="#m1-3">要用到的知识</a></li><li><a href="#m1-4">图解与类比</a></li><li><a href="#m1-5">题目要求</a></li><li><a href="#m1-6">题干</a></li><li><a href="#m1-7">验收</a></li><li><a href="#m1-8">提示</a></li><li><a href="#m1-9">参考解</a></li><li><a href="#m1-10">测完之后</a></li></ol></nav>
@@ -7339,7 +7348,7 @@ def moe_align_block_size(topk_ids: torch.Tensor, num_experts: int, block_m: int)
 <div class="badges">
 <span class="badge">⏱ <b>75 min</b></span>
 <span class="badge diff-难">难度 <b>难</b></span>
-<span class="badge">你写 <code>mine/m2_fused_moe.py</code></span><span class="badge">验收 <code>./check.sh m2</code></span><span class="badge">参考解 <code>solutions/m2_fused_moe.py</code></span>
+<span class="badge">你写 <code>mine/m2_fused_moe.py</code></span><span class="badge">验收 <code>./check.sh m2</code></span><span class="badge">参考解 <code>solutions/m2_fused_moe.py</code></span><a class="badge hint-link" href="hints/m2_fused_moe.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="M2">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#m2-1">背景</a></li><li><a href="#m2-2">源码与资料</a></li><li><a href="#m2-3">要用到的知识</a></li><li><a href="#m2-4">图解与类比</a></li><li><a href="#m2-5">题目要求</a></li><li><a href="#m2-6">题干</a></li><li><a href="#m2-7">验收</a></li><li><a href="#m2-8">提示</a></li><li><a href="#m2-9">参考解</a></li><li><a href="#m2-10">测完之后</a></li></ol></nav>
@@ -7649,7 +7658,7 @@ def moe_layer(x, router_logits, w13, w2, top_k, block_m=64):
 <div class="badges">
 <span class="badge">⏱ <b>60 min</b></span>
 <span class="badge diff-难">难度 <b>难</b></span>
-<span class="badge">你写 <code>mine/m3_fp8_block_gemm.py</code></span><span class="badge">验收 <code>./check.sh m3</code></span><span class="badge">参考解 <code>solutions/m3_fp8_block_gemm.py</code></span>
+<span class="badge">你写 <code>mine/m3_fp8_block_gemm.py</code></span><span class="badge">验收 <code>./check.sh m3</code></span><span class="badge">参考解 <code>solutions/m3_fp8_block_gemm.py</code></span><a class="badge hint-link" href="hints/m3_fp8_block_gemm.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="M3">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#m3-1">背景</a></li><li><a href="#m3-2">源码与资料</a></li><li><a href="#m3-3">要用到的知识</a></li><li><a href="#m3-4">图解与类比</a></li><li><a href="#m3-5">题目要求</a></li><li><a href="#m3-6">题干</a></li><li><a href="#m3-7">验收</a></li><li><a href="#m3-8">提示</a></li><li><a href="#m3-9">参考解</a></li><li><a href="#m3-10">测完之后</a></li></ol></nav>
@@ -7974,7 +7983,7 @@ def fp8_block_gemm(a_q, a_s, b_q, b_s, out_dtype=torch.bfloat16, block_m=64, blo
 <div class="badges">
 <span class="badge">⏱ <b>30 min</b></span>
 <span class="badge diff-易">难度 <b>易</b></span>
-<span class="badge">你写 <code>mine/x1_metal_elementwise.py</code></span><span class="badge">验收 <code>./check.sh x1</code></span><span class="badge">参考解 <code>solutions/x1_metal_elementwise.py</code></span>
+<span class="badge">你写 <code>mine/x1_metal_elementwise.py</code></span><span class="badge">验收 <code>./check.sh x1</code></span><span class="badge">参考解 <code>solutions/x1_metal_elementwise.py</code></span><a class="badge hint-link" href="hints/x1_metal_elementwise.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="X1">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#x1-1">背景</a></li><li><a href="#x1-2">源码与资料</a></li><li><a href="#x1-3">要用到的知识：CUDA ↔ Metal 对照</a></li><li><a href="#x1-4">图解与类比</a></li><li><a href="#x1-5">题目要求</a></li><li><a href="#x1-6">题干</a></li><li><a href="#x1-7">验收</a></li><li><a href="#x1-8">提示</a></li><li><a href="#x1-9">参考解</a></li><li><a href="#x1-10">测完之后</a></li></ol></nav>
@@ -8236,7 +8245,7 @@ def add_gelu_vec(x: mx.array, y: mx.array, n_per: int = 4, threadgroup: int = 25
 <div class="badges">
 <span class="badge">⏱ <b>45 min</b></span>
 <span class="badge diff-中">难度 <b>中</b></span>
-<span class="badge">你写 <code>mine/x2_metal_softmax.py</code></span><span class="badge">验收 <code>./check.sh x2</code></span><span class="badge">参考解 <code>solutions/x2_metal_softmax.py</code></span>
+<span class="badge">你写 <code>mine/x2_metal_softmax.py</code></span><span class="badge">验收 <code>./check.sh x2</code></span><span class="badge">参考解 <code>solutions/x2_metal_softmax.py</code></span><a class="badge hint-link" href="hints/x2_metal_softmax.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="X2">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#x2-1">背景</a></li><li><a href="#x2-2">源码与资料</a></li><li><a href="#x2-3">要用到的知识</a></li><li><a href="#x2-4">图解与类比</a></li><li><a href="#x2-5">题目要求</a></li><li><a href="#x2-6">题干</a></li><li><a href="#x2-7">验收</a></li><li><a href="#x2-8">提示</a></li><li><a href="#x2-9">参考解</a></li><li><a href="#x2-10">测完之后</a></li></ol></nav>
@@ -8531,7 +8540,7 @@ def rms_norm(x: mx.array, w: mx.array, eps: float = 1e-6) -&gt; mx.array:
 <div class="badges">
 <span class="badge">⏱ <b>75 min</b></span>
 <span class="badge diff-难">难度 <b>难</b></span>
-<span class="badge">你写 <code>mine/x3_metal_matmul.py</code></span><span class="badge">验收 <code>./check.sh x3</code></span><span class="badge">参考解 <code>solutions/x3_metal_matmul.py</code></span>
+<span class="badge">你写 <code>mine/x3_metal_matmul.py</code></span><span class="badge">验收 <code>./check.sh x3</code></span><span class="badge">参考解 <code>solutions/x3_metal_matmul.py</code></span><a class="badge hint-link" href="hints/x3_metal_matmul.html">📖 <b>逐行讲解</b></a>
 <label class="badge done-toggle"><input type="checkbox" class="done-box" data-id="X3">标记完成</label>
 </div>
 <nav class="mini-toc"><ol><li><a href="#x3-1">背景</a></li><li><a href="#x3-2">源码与资料</a></li><li><a href="#x3-3">要用到的知识</a></li><li><a href="#x3-4">图解与类比</a></li><li><a href="#x3-5">题目要求</a></li><li><a href="#x3-6">题干</a></li><li><a href="#x3-7">验收</a></li><li><a href="#x3-8">提示</a></li><li><a href="#x3-9">参考解</a></li><li><a href="#x3-10">测完之后</a></li></ol></nav>

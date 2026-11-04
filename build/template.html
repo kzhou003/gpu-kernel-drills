@@ -78,6 +78,9 @@ a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: un
   border-radius: 999px; padding: 1px 10px; font-size: 12.5px; color: var(--muted); }
 .badge b { color: var(--text); font-weight: 600; }
 .badge code { font-size: 11.5px; }
+a.badge.hint-link { color: var(--accent); border-color: var(--accent); }
+a.badge.hint-link b { color: var(--accent); }
+a.badge.hint-link:hover { background: var(--accent-soft); text-decoration: none; }
 .badge.diff-易 b { color: var(--ok); } .badge.diff-中 b { color: var(--l2); } .badge.diff-难 b { color: var(--bad); }
 .done-toggle { cursor: pointer; } .done-toggle input { margin: 0 4px 0 0; }
 .progress { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); margin-top: 10px; }
@@ -207,6 +210,7 @@ svg .f-node.hl rect.f-box { stroke-width: 2.4; }
 <header class="topbar">
   <button type="button" class="btn" id="nav-btn" aria-label="目录">☰ 目录</button>
   <a class="home" href="#top">Kernel Dev 训练营</a>
+  <a href="hints/index.html">提示与讲解</a>
   <span class="spacer"></span>
   <span class="prog-mini" id="prog-mini"></span>
   <button type="button" class="btn" id="theme-btn" title="切换明暗">◐</button>

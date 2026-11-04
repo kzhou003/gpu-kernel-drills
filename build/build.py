@@ -264,6 +264,29 @@ def basics_section(name, idx):
             + (f'<nav class="mini-toc"><ol>{sub}</ol></nav>' if toc else "") + body + "</section>"), title, toc
 
 
+HINTS = ROOT / "hints"
+
+
+def hint_page(did, stem):
+    """hints/<stem>.html for a drill (F5 has no stem: match by its id prefix), or None."""
+    if stem and (HINTS / f"{stem}.html").exists():
+        return f"hints/{stem}.html"
+    for p in sorted(HINTS.glob(f"{did.lower()}_*.html")):
+        return f"hints/{p.name}"
+    return None
+
+
+def hint_topics():
+    """Hint pages that belong to no drill: (href, title from hints/src/<name>.md)."""
+    drill_pages = {hint_page(d[0], d[1]) for d in DRILLS}
+    out = []
+    for src in sorted((HINTS / "src").glob("*.md")):
+        href = f"hints/{src.stem}.html"
+        if href not in drill_pages and (ROOT / href).exists():
+            out.append((href, src.read_text(encoding="utf-8").splitlines()[0][6:].strip()))
+    return out
+
+
 def drill_section(k):
     did, stem, title, mins, diff, track = DRILLS[k]
     lede, lines = read_src(did.lower())
@@ -276,6 +299,9 @@ def drill_section(k):
                  f'<span class="badge">参考解 <code>solutions/{stem}{ext}</code></span>')
     else:
         files = '<span class="badge">实践 · 在 FlashInfer 仓库里动手，没有 check.sh</span>'
+    hp = hint_page(did, stem)
+    if hp:
+        files += f'<a class="badge hint-link" href="{hp}">📖 <b>逐行讲解</b></a>'
     head = f"""<div class="drill-head">
 <div class="kicker">{TRACKS[track][2]} · {TRACKS[track][0]} · 第 {k + 1} 题</div>
 <h2><span class="did">{did}</span>{html.escape(title)}</h2>
@@ -315,6 +341,12 @@ def page():
             parts.append(sec)
             nav.append(f'<a class="nav-item drill-link" href="#{d[0].lower()}" data-id="{d[0]}">'
                        f'<span class="nid">{d[0]}</span>{html.escape(d[2].split("：")[0])}<span class="nmin">{d[3]}′</span></a>')
+    # stand-alone explainer pages (hints/, built by build_hints.py)
+    nav.append('<div class="nav-tier">提示与讲解</div>'
+               '<a class="nav-item" href="hints/index.html">全部讲解页（每题一页）</a>'
+               '<div class="nav-group">专题</div>')
+    for href, t in hint_topics():
+        nav.append(f'<a class="nav-item" href="{href}">{html.escape(t.split("：")[0])}</a>')
     html_, title, _ = basics_section("interview", "")
     parts.append(html_.replace("Part 0 · 基础 ", "面试"))
     nav.append(f'<div class="nav-tier">收尾</div><a class="nav-item" href="#interview">{html.escape(title)}</a>')
